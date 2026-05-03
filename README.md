@@ -79,6 +79,8 @@ CRON_SECRET=
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 ```
 
+本番環境の設定手順は [docs/production-setup-ja.md](/Users/M.Isozu/SourceCode/apde/docs/production-setup-ja.md) を参照してください。
+
 ## API
 
 ### `POST /api/discover`
