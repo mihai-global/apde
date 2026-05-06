@@ -3,3 +3,6 @@ node_modules/
 dist/
 tsconfig.tsbuildinfo
 .env
+.playwright-mcp/
+phase-*.png
+phase2-*.png
