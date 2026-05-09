@@ -9,7 +9,7 @@ import { MemoEditor } from "@/components/detail/MemoEditor";
 import { ProfitCalculator } from "@/components/detail/ProfitCalculator";
 import { ScoreBreakdownSection } from "@/components/detail/ScoreBreakdown";
 import { SourceBadge } from "@/components/primitives/SourceBadge";
-import { ThumbPlaceholder } from "@/components/primitives/ThumbPlaceholder";
+import { Thumbnail } from "@/components/primitives/Thumbnail";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { fmtNum } from "@/lib/format";
 import { analyzeProduct } from "@/lib/integrations";
@@ -46,6 +46,7 @@ export default async function ProductDetailPage({
     title: product?.title,
     category: product?.category,
     brand: product?.brand,
+    metrics: product?.imageUrl ? { imageUrl: product.imageUrl } : undefined,
   });
 
   const watchlistStatus = watchlist.find((w) => w.asin === asin)?.status ?? null;
@@ -76,9 +77,12 @@ export default async function ProductDetailPage({
           style={{ alignItems: "flex-start", marginBottom: 40, gap: 32 }}
         >
           <div style={{ flex: 1, display: "flex", gap: 24 }}>
-            <div className="thumb" style={{ width: 96, height: 96, flexShrink: 0 }}>
-              <ThumbPlaceholder seed={thumbSeed} />
-            </div>
+            <Thumbnail
+              src={analysis.metrics.imageUrl ?? product?.imageUrl}
+              alt={analysis.title}
+              seed={thumbSeed}
+              size={96}
+            />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="eyebrow" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                 <span>{analysis.category} · ASIN {analysis.asin}</span>

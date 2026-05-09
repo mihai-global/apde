@@ -135,7 +135,7 @@ export async function listProductSummaries(asins?: string[]): Promise<ProductSum
   if (!supabase) return [];
   let query = supabase
     .from("products")
-    .select("asin,title,category,brand,current_price,weight_grams,size_tier,review_count,seller_count,brand_strength,rating");
+    .select("asin,title,category,brand,image_url,current_price,weight_grams,size_tier,review_count,seller_count,brand_strength,rating");
   if (asins && asins.length > 0) {
     query = query.in("asin", asins);
   }
@@ -161,6 +161,7 @@ export async function listProductSummaries(asins?: string[]): Promise<ProductSum
     seed: Math.abs(
       [...p.asin].reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 0),
     ),
+    imageUrl: typeof p.image_url === "string" ? p.image_url : undefined,
   }));
 }
 

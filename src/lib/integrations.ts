@@ -375,6 +375,30 @@ export async function discoverProducts(
     survivors.push(metrics);
   }
 
+  // 候補を products table に保証 upsert (詳細ページが空欄にならないように)。
+  // ここで title / brand / category / image_url を保存しておけば、後で
+  // /products/[asin] が getProductSummary で実データを引ける。
+  await Promise.all(
+    survivors.map((metrics) =>
+      upsertProductMaster({
+        asin: metrics.asin,
+        title: metrics.title,
+        brand: metrics.brand,
+        category: metrics.category,
+        image_url: metrics.imageUrl ?? null,
+        current_price: metrics.currentPrice,
+        review_count: metrics.reviewCount,
+        seller_count: metrics.sellerCount,
+        rating: metrics.rating ?? null,
+      }).catch((err) => {
+        console.warn("[apde] upsertProductMaster failed in discover", {
+          asin: metrics.asin,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }),
+    ),
+  );
+
   // 候補を analyzeMetrics で評価 (LLM は呼ばずキーワード生成だけのために createFallbackInsight 使用)。
   // Discovery 時に 20 件分の LLM を回すのはコストが大きいので、当面 mock insight で済ませ、
   // 詳細ページで初めて Gemini を呼ぶ運用とする。

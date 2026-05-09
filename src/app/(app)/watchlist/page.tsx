@@ -19,6 +19,7 @@ export default async function WatchlistPage() {
       decision: p?.decision ?? "CONDITIONAL_GO",
       score: p?.score ?? 0,
       seed: p?.seed ?? 1,
+      imageUrl: p?.imageUrl,
     };
   });
 

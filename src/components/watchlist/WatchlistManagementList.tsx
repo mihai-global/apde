@@ -5,7 +5,7 @@ import { useState, useTransition } from "react";
 import { deleteWatchlist, updateWatchlistStatus } from "@/app/(app)/watchlist/actions";
 import { Chip } from "@/components/primitives/Chip";
 import { DBadge } from "@/components/primitives/DBadge";
-import { ThumbPlaceholder } from "@/components/primitives/ThumbPlaceholder";
+import { Thumbnail } from "@/components/primitives/Thumbnail";
 import type { Decision, WatchlistStatus } from "@/lib/types";
 
 export interface ManagedWatchlistRow {
@@ -16,6 +16,7 @@ export interface ManagedWatchlistRow {
   decision: Decision;
   score: number;
   seed: number;
+  imageUrl?: string;
 }
 
 interface WatchlistManagementListProps {
@@ -73,9 +74,7 @@ export function WatchlistManagementList({ rows }: WatchlistManagementListProps) 
                 opacity: pendingAsin === row.asin ? 0.6 : 1,
               }}
             >
-              <span className="thumb" style={{ width: 40, height: 40 }}>
-                <ThumbPlaceholder seed={row.seed} />
-              </span>
+              <Thumbnail src={row.imageUrl} alt={row.title} seed={row.seed} size={40} />
               <span>
                 <Link href={`/products/${row.asin}`} className="pname">{row.title}</Link>
                 <br />
