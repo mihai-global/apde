@@ -130,6 +130,10 @@ export interface KeepaSearchHit {
 
 interface KeepaSearchResponse {
   tokensConsumed?: number;
+  totalResults?: number;
+  /** type=product では基本これだけ返る (ASIN 文字列の配列) */
+  asinList?: string[];
+  /** category browse 等では rich product objects が返る */
   products?: Array<{
     asin: string;
     title?: string;
@@ -142,6 +146,9 @@ interface KeepaSearchResponse {
  * Keepa Search API でキーワード検索 → ASIN リストを返す。
  * `term` を URL エンコードして渡す。 type=product, domain=5 (Amazon.co.jp)。
  * 1 回 5 トークン、1 ページあたり最大 40 件。
+ *
+ * 注: type=product のレスポンスは `asinList` (string[]) で返るパターンが主流。
+ * `products` (rich object) で返るプランもあるため両方ハンドリングする。
  */
 export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearchHit[]> {
   if (!env.keepa.configured) {
@@ -154,13 +161,21 @@ export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearch
   }
   const data: KeepaSearchResponse = await res.json();
   void usage.keepa("/search", data.tokensConsumed ?? 5);
-  const products = data.products ?? [];
-  return products.slice(0, limit).map((p) => ({
-    asin: p.asin,
-    title: p.title,
-    brand: p.brand,
-    imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
-  }));
+
+  if (data.products && data.products.length > 0) {
+    return data.products.slice(0, limit).map((p) => ({
+      asin: p.asin,
+      title: p.title,
+      brand: p.brand,
+      imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+    }));
+  }
+
+  if (data.asinList && data.asinList.length > 0) {
+    return data.asinList.slice(0, limit).map((asin) => ({ asin }));
+  }
+
+  return [];
 }
 
 export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
