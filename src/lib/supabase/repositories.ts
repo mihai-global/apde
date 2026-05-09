@@ -412,6 +412,125 @@ export async function insertDiscoveryRun(row: Omit<DiscoveryRunRow, "id" | "crea
   return data as DiscoveryRunRow;
 }
 
+// ─── dashboard kpis ─────────────────────────────────────────────────────
+
+export interface DashboardKpis {
+  goThisMonth: number;
+  goLastMonth: number;
+  conditionalThisMonth: number;
+  watchlistTotal: number;
+  watchlistSourcing: number;
+  watchlistLive: number;
+  feedbackProfitable: number;
+  feedbackTotal: number;
+  avgDiscoveryDurationSec: number;
+  recentRunsCount: number;
+  watchlistChangedThisWeek: number;
+}
+
+function startOfMonth(offsetMonths = 0): string {
+  const d = new Date();
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCMonth(d.getUTCMonth() + offsetMonths);
+  return d.toISOString();
+}
+
+export async function getDashboardKpis(): Promise<DashboardKpis> {
+  const monthStart = startOfMonth(0);
+  const lastMonthStart = startOfMonth(-1);
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const analyses = store.analysis;
+    const inMonth = (iso: string) => iso >= monthStart;
+    const inLastMonth = (iso: string) => iso >= lastMonthStart && iso < monthStart;
+    const goThisMonth = analyses.filter((a) => a.decision === "GO" && inMonth(a.created_at)).length;
+    const goLastMonth = analyses.filter((a) => a.decision === "GO" && inLastMonth(a.created_at)).length;
+    const conditionalThisMonth = analyses.filter(
+      (a) => a.decision === "CONDITIONAL_GO" && inMonth(a.created_at),
+    ).length;
+    const wl = Array.from(store.watchlist.values());
+    const feedback = Array.from(store.feedback.values());
+    const runs = store.discoveryRuns;
+    return {
+      goThisMonth,
+      goLastMonth,
+      conditionalThisMonth,
+      watchlistTotal: wl.length,
+      watchlistSourcing: wl.filter((w) => w.status === "sourcing").length,
+      watchlistLive: wl.filter((w) => w.status === "live").length,
+      feedbackProfitable: feedback.filter((f) => f.outcome === "profitable").length,
+      feedbackTotal: feedback.length,
+      avgDiscoveryDurationSec:
+        runs.length > 0 ? Math.round(runs.reduce((s, r) => s + r.duration_ms, 0) / runs.length / 1000) : 0,
+      recentRunsCount: runs.filter((r) => r.created_at >= weekAgo).length,
+      watchlistChangedThisWeek: wl.filter((w) => w.added_at >= weekAgo).length,
+    };
+  }
+
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) {
+    return {
+      goThisMonth: 0,
+      goLastMonth: 0,
+      conditionalThisMonth: 0,
+      watchlistTotal: 0,
+      watchlistSourcing: 0,
+      watchlistLive: 0,
+      feedbackProfitable: 0,
+      feedbackTotal: 0,
+      avgDiscoveryDurationSec: 0,
+      recentRunsCount: 0,
+      watchlistChangedThisWeek: 0,
+    };
+  }
+
+  const [goMonth, goLast, condMonth, wlAll, feedbackRows, recentRuns] = await Promise.all([
+    supabase
+      .from("analysis")
+      .select("id", { count: "exact", head: true })
+      .eq("decision", "GO")
+      .gte("created_at", monthStart),
+    supabase
+      .from("analysis")
+      .select("id", { count: "exact", head: true })
+      .eq("decision", "GO")
+      .gte("created_at", lastMonthStart)
+      .lt("created_at", monthStart),
+    supabase
+      .from("analysis")
+      .select("id", { count: "exact", head: true })
+      .eq("decision", "CONDITIONAL_GO")
+      .gte("created_at", monthStart),
+    supabase.from("watchlist").select("status,added_at"),
+    supabase.from("purchase_feedback").select("outcome"),
+    supabase.from("discovery_runs").select("duration_ms,created_at").gte("created_at", weekAgo),
+  ]);
+
+  const wlList = (wlAll.data ?? []) as Array<{ status: string; added_at: string }>;
+  const feedbackList = (feedbackRows.data ?? []) as Array<{ outcome: string }>;
+  const runsList = (recentRuns.data ?? []) as Array<{ duration_ms: number; created_at: string }>;
+
+  return {
+    goThisMonth: goMonth.count ?? 0,
+    goLastMonth: goLast.count ?? 0,
+    conditionalThisMonth: condMonth.count ?? 0,
+    watchlistTotal: wlList.length,
+    watchlistSourcing: wlList.filter((w) => w.status === "sourcing").length,
+    watchlistLive: wlList.filter((w) => w.status === "live").length,
+    feedbackProfitable: feedbackList.filter((f) => f.outcome === "profitable").length,
+    feedbackTotal: feedbackList.length,
+    avgDiscoveryDurationSec:
+      runsList.length > 0
+        ? Math.round(runsList.reduce((s, r) => s + r.duration_ms, 0) / runsList.length / 1000)
+        : 0,
+    recentRunsCount: runsList.length,
+    watchlistChangedThisWeek: wlList.filter((w) => w.added_at >= weekAgo).length,
+  };
+}
+
 // ─── analysis ─────────────────────────────────────────────────────────
 
 export async function getLatestAnalysis(asin: string): Promise<AnalysisRow | null> {
