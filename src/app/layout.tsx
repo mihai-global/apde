@@ -6,29 +6,27 @@ import "./globals.css";
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
-  display: "swap"
+  display: "swap",
 });
 
 const notoSansJP = Noto_Sans_JP({
   subsets: ["latin"],
-  weight: ["400", "500", "700"],
+  weight: ["300", "400", "500", "700"],
   variable: "--font-noto-jp",
-  display: "swap"
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "Amazon Product Discovery Engine",
-  description: "Amazon FBA/OEM向けの商品探索・分析・意思決定を支援するMVP"
+  title: "APDE — Amazon Product Discovery Engine",
+  description: "Amazon FBA / OEM 候補を「迷わず捨て、迷わず GO する」ための個人リサーチツール",
 };
 
-export default function RootLayout({
-  children
-}: Readonly<{
-  children: ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="ja" className={`${inter.variable} ${notoSansJP.variable}`}>
-      <body>{children}</body>
+    <html lang="ja" className={`${inter.variable} ${notoSansJP.variable}`} suppressHydrationWarning>
+      <body data-theme="light" data-density="normal" data-accent="mono">
+        {children}
+      </body>
     </html>
   );
 }

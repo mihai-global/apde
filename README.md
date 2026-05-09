@@ -1,152 +1,41 @@
-# Amazon Product Discovery Engine
+# APDE — Amazon Product Discovery Engine
 
-Amazon FBA / OEM向けに、カテゴリ入力から商品候補の発掘、ASIN分析、GO / NO-GO判断までを一気通しで行う Next.js MVP です。
+> 「迷わず捨て、迷わず GO する」個人物販リサーチの構造化ツール
+>
+> Amazon FBA / OEM の候補商品を、5軸スコアリング + 強制ゲート判定で構造的に評価し、
+> GO / 条件付き GO / NO-GO の意思決定まで一気通貫で支援します。
 
-## 実装した範囲
+## 概要
 
-- カテゴリ、価格帯、レビュー条件による商品探索API
-- 構造ルールベースの5軸スコアリング
-  - 価格適正 `0-25`
-  - サイズ効率 `0-20`
-  - 競争余地 `0-20`
-  - 価格安定性 `0-15`
-  - OEM適性 `0-20`
-- ゲート判定
-  - 粗利率
-  - 広告耐性
-  - 回転率
-  - 差別化余地
-  - 規制・権利リスク
-- `GO / 条件付きGO / NO-GO` 判定
-- 商品一覧UI
-  - 商品名
-  - スコア
-  - 想定月商
-  - 競争レベル
-  - 判定
-- 商品詳細UI
-  - 結論
-  - 理由3点
-  - 主要リスク
-  - 推移グラフ
-  - 次アクション
-  - LLM分析欄
-- 24時間TTLキャッシュ
-- 定期更新用の `/api/refresh` エンドポイント雛形
-- Supabase向けSQLスキーマ
+- 5ページ構成: ダッシュボード / 探索 / 候補一覧 / 商品詳細 / 監視リスト / 学習辞書
+- 商品詳細は8セクション (結論 / スコア / ゲート / Keepa / 利益性 / LLM / 履歴 / メモ)
+- ライト・ダーク両モード、密度3段階、判定バッジ4スタイル切替対応
+- Editorial Light Design System (Sony Design System に準拠したミニマル黒白ベース)
+- Supabase Auth + PostgreSQL / Keepa API / Gemini API 連携
+- 外部API無しでも動く mockMode (env未設定時に自動切替)
 
-## 現在の実装方針
-
-このリポジトリは、外部API未接続でも画面と判定ロジックを先に検証できるように、`mock` / `hybrid` を返すMVP構成にしています。
-
-判定思想は「経験則」ではなく、以下の構造ルールを優先しています。
-
-- 価格は `¥3,000〜¥8,000` を最優先
-- `500g以下` かつ小型を優先
-- 粗利率 `40〜60%` を理想値として評価
-- レビュー `100〜500` の中程度競争を優先
-- Keepa上の価格崩壊を強く減点
-- 差別化余地とOEM再現性を評価
-- 月販 `100個以上` を回転率の目安に使用
-- 法規制、特許、技術難度が高い商品は落選寄りに判定
-
-- `KEEPA_API_KEY` 未設定時
-  - Keepa相当のモック時系列を生成
-- `GEMINI_API_KEY` 未設定時
-  - 戦略レポートはフォールバック生成
-- そのため現時点でも探索から判断UIまで一通り動かせます
-
-## セットアップ
+## クイックスタート
 
 ```bash
-npm install
-npm run dev
+pnpm install
+cp .env.example .env.local        # env は空でもOK (mockMode で起動)
+pnpm dev                           # http://localhost:3000
 ```
 
-`http://localhost:3000` を開いて確認してください。
+詳細は [`docs/developer-guide-ja.md`](docs/developer-guide-ja.md) を参照。
 
-## 環境変数
+## 関連ドキュメント
 
-`.env.example` をコピーして利用します。
+- [開発者向けスタートアップガイド](docs/developer-guide-ja.md) — セットアップ / アーキテクチャ / API / DB / デプロイまで
+- [本番環境セットアップ手順](docs/production-setup-ja.md) — Vercel + Supabase + Keepa + Gemini
+- [要件定義書 v1.1](docs/requirements_v1_1_ja.md) — 機能要件・データモデル・KPI
 
-```bash
-KEEPA_API_KEY=
-GEMINI_API_KEY=
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-CRON_SECRET=
-NEXT_PUBLIC_APP_URL=http://localhost:3000
-```
+## デモ
 
-本番環境の設定手順は [docs/production-setup-ja.md](/Users/M.Isozu/SourceCode/apde/docs/production-setup-ja.md) を参照してください。
+`demo/index.html` は外部 API 無しで動作する **UI 完成版のスタンドアロン HTML** です。
+ブラウザで開くだけで全画面のデザインを確認できます (実データは扱いません)。
 
-## API
+## ライセンス / 注記
 
-### `POST /api/discover`
-
-カテゴリ探索を実行します。
-
-```json
-{
-  "category": "デスク周り",
-  "minPrice": 2000,
-  "maxPrice": 7000,
-  "maxReviews": 500,
-  "limit": 20
-}
-```
-
-### `POST /api/analyze`
-
-ASIN単位の詳細分析を返します。
-
-```json
-{
-  "asin": "B000000001",
-  "title": "デスク向け ケーブル収納 プロダクト 01",
-  "category": "デスク周り",
-  "brand": "Nova A"
-}
-```
-
-### `POST /api/refresh`
-
-Cron想定の一括更新エンドポイントです。
-
-```json
-{
-  "categories": ["デスク周り", "キッチン", "アウトドア"]
-}
-```
-
-## ディレクトリ構成
-
-```text
-src/
-  app/
-    api/
-      analyze/route.ts
-      discover/route.ts
-      refresh/route.ts
-    globals.css
-    layout.tsx
-    page.tsx
-  components/
-    discovery-dashboard.tsx
-  lib/
-    cache.ts
-    integrations.ts
-    scoring.ts
-    types.ts
-db/
-  schema.sql
-```
-
-## 本番接続に向けた次ステップ
-
-1. `src/lib/integrations.ts` のモック生成部を Keepa / Gemini 実呼び出しに置き換える
-2. Supabase Auth を追加して API へのアクセスを保護する
-3. 探索履歴、比較リスト、チャットQ&AをDB保存する
-4. Vercel Cron から `/api/refresh` を呼び出して人気カテゴリを再計算する
-5. 利益計算、Alibaba / 1688比較、仕入れ候補生成へ拡張する
+- Sony SST / SST JP Pro フォントはリポジトリ非公開です。`public/fonts/` に配置すれば自動的に適用されます。
+- 個人運用前提のスコープです (アンチゴール: マルチテナント / 自動仕入れ / SaaS 化)。

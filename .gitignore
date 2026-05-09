@@ -3,6 +3,12 @@ node_modules/
 dist/
 tsconfig.tsbuildinfo
 .env
+.env.local
+.env.*.local
 .playwright-mcp/
 phase-*.png
 phase2-*.png
+
+# Sony SST フォント (社外ライセンス) — 開発者個別配置のみ許可
+public/fonts/SST*.otf
+public/fonts/SST*.woff*
