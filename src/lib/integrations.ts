@@ -351,21 +351,35 @@ export async function discoverProducts(
     for (const kw of searchKeywords) {
       try {
         const hits = await searchKeepa(kw, perKeyword);
+        console.info("[apde:discover] search ok", {
+          keyword: kw,
+          hits: hits.length,
+          firstAsins: hits.slice(0, 3).map((h) => h.asin),
+        });
         for (const hit of hits) {
+          if (!hit.asin) continue;
           if (seenAsins.has(hit.asin)) continue;
           seenAsins.add(hit.asin);
           seeds.push(createSeedMetricsFromSearch(hit, input.category));
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.warn("[apde:keepa] search failed", { keyword: kw, message });
+        console.warn("[apde:discover] search failed", { keyword: kw, message });
         searchErrors.push(message);
       }
     }
 
+    console.info("[apde:discover] search summary", {
+      keywordsTried: searchKeywords.length,
+      totalSeeds: seeds.length,
+      uniqueAsins: seenAsins.size,
+      errors: searchErrors.length,
+    });
+
     if (seeds.length === 0) {
-      // 全 search 失敗 → mock にフォールバック
-      console.warn("[apde:keepa] all searches failed, falling back to mock", { errors: searchErrors });
+      console.warn("[apde:keepa] all searches returned empty, falling back to mock", {
+        errors: searchErrors,
+      });
       useLive = false;
     } else {
       collected = seeds;

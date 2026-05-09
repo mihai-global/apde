@@ -167,17 +167,35 @@ export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearch
   const data: KeepaSearchResponse = await res.json();
   void usage.keepa("/search", data.tokensConsumed ?? 5);
 
-  if (data.products && data.products.length > 0) {
-    return data.products.slice(0, limit).map((p) => ({
-      asin: p.asin,
-      title: p.title,
-      brand: p.brand,
-      imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
-    }));
+  const products = Array.isArray(data.products) ? data.products : null;
+  const asinList = Array.isArray(data.asinList) ? data.asinList : null;
+  console.info("[apde:keepa:search]", {
+    term,
+    productsCount: products?.length ?? 0,
+    asinListCount: asinList?.length ?? 0,
+    tokensLeft: (data as Record<string, unknown>).tokensLeft,
+    tokensConsumed: (data as Record<string, unknown>).tokensConsumed,
+  });
+
+  if (products && products.length > 0) {
+    const hits = products
+      .filter((p) => typeof p.asin === "string" && p.asin.length > 0)
+      .slice(0, limit)
+      .map((p) => ({
+        asin: p.asin,
+        title: p.title,
+        brand: p.brand,
+        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+      }));
+    if (hits.length > 0) return hits;
+    console.warn("[apde:keepa:search] products[] had no usable asin field", { term });
   }
 
-  if (data.asinList && data.asinList.length > 0) {
-    return data.asinList.slice(0, limit).map((asin) => ({ asin }));
+  if (asinList && asinList.length > 0) {
+    return asinList
+      .filter((a) => typeof a === "string" && a.length > 0)
+      .slice(0, limit)
+      .map((asin) => ({ asin }));
   }
 
   return [];
