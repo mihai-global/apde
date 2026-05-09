@@ -8,6 +8,7 @@ import { createMockMetrics } from "@/lib/keepa/mock";
 import { generateKeywords } from "@/lib/keywords/generate";
 import { evaluateExclusion, toExcludedCandidate } from "@/lib/exclusion/filter";
 import { generateInsight } from "@/lib/llm";
+import { createFallbackInsight } from "@/lib/llm/mock";
 import { computeProfit } from "@/lib/profit";
 import { scoreAsin } from "@/lib/scoring";
 import {
@@ -52,6 +53,8 @@ interface AnalyzeOptions {
   metrics: AsinMetrics;
   source: DataSource;
   profitOverrides?: { costRate?: number; cvr?: number; cpc?: number };
+  /** true なら LLM 呼び出しをスキップしフォールバック洞察を返す (Discovery 一括用) */
+  skipLlm?: boolean;
 }
 
 function determineSource(keepaLive: boolean, llmLive: boolean): DataSource {
@@ -239,13 +242,22 @@ export async function analyzeMetrics(opts: AnalyzeOptions): Promise<AnalysisResu
   const decision = downgradeByGates(baseDecision, gates);
   const summary = summarizeDecision(decision);
 
-  const insight = await generateInsight({
-    metrics: opts.metrics,
-    decision,
-    competitionLevel: structural.competitionLevel,
-    summary,
-    scoreTotal: structural.score,
-  });
+  const insight = opts.skipLlm
+    ? createFallbackInsight({
+        decision,
+        category: opts.metrics.category,
+        brand: opts.metrics.brand,
+        competitionLevel: structural.competitionLevel,
+        summary,
+        reviewCount: opts.metrics.reviewCount,
+      })
+    : await generateInsight({
+        metrics: opts.metrics,
+        decision,
+        competitionLevel: structural.competitionLevel,
+        summary,
+        scoreTotal: structural.score,
+      });
 
   const now = new Date();
   return {
@@ -340,15 +352,19 @@ export async function discoverProducts(
   let collected: AsinMetrics[] = [];
 
   if (useLive) {
-    // Keepa Search で 5 軸キーワード上位 4 つから ASIN を集める。
-    // 1 検索 = 5 トークン、1 ページ最大 40 件。 perKeyword=8 なら 4 検索 = 20 トークン。
-    const searchKeywords = keywords.slice(0, 4);
-    const perKeyword = 8;
+    // Keepa Search で代表キーワード 2 つから ASIN を集める (トークン節約)。
+    // 1 検索 = 10 トークン (Keepa /search 実測)。 perKeyword=15 で 2 検索 = 20 トークン。
+    // 4 検索すると free-tier では 429 を頻発するため意図的に 2 に絞る。
+    const searchKeywords = keywords.slice(0, 2);
+    const perKeyword = 15;
     const seenAsins = new Set<string>();
     const seeds: AsinMetrics[] = [];
     const searchErrors: string[] = [];
 
-    for (const kw of searchKeywords) {
+    for (let i = 0; i < searchKeywords.length; i += 1) {
+      const kw = searchKeywords[i]!;
+      // 連続コールで 429 を踏まないため 800ms クールダウン (初回はスキップ)
+      if (i > 0) await new Promise((r) => setTimeout(r, 800));
       try {
         const hits = await searchKeepa(kw, perKeyword);
         console.info("[apde:discover] search ok", {
@@ -453,11 +469,10 @@ export async function discoverProducts(
     ),
   );
 
-  // 候補を analyzeMetrics で評価 (LLM は呼ばずキーワード生成だけのために createFallbackInsight 使用)。
-  // Discovery 時に 20 件分の LLM を回すのはコストが大きいので、当面 mock insight で済ませ、
-  // 詳細ページで初めて Gemini を呼ぶ運用とする。
+  // 候補を analyzeMetrics で評価。 Discovery 時は LLM をスキップし、Gemini トークンと
+  // レスポンス時間を節約。詳細ページで初めて Gemini を呼ぶ運用。
   const analyzed = await Promise.all(
-    survivors.map((metrics) => analyzeMetrics({ metrics, source: "hybrid" })),
+    survivors.map((metrics) => analyzeMetrics({ metrics, source: "hybrid", skipLlm: true })),
   );
 
   // 各候補の source は keepa の live 状況に応じて再設定 (LLM はここでは未使用扱い)

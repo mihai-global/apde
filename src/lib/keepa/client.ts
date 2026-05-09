@@ -107,22 +107,33 @@ export interface KeepaSeries {
 
 async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
   let lastError: unknown = null;
+  let lastStatus = 0;
   for (let i = 0; i < attempts; i += 1) {
     try {
       const res = await fetch(url, { cache: "no-store" });
       if (res.ok) return res;
-      // 429/500 は指数バックオフで再試行
-      if (res.status >= 500 || res.status === 429) {
+      lastStatus = res.status;
+      // 429 (rate limit) は長めに待つ。 Keepa は token 補充が遅いので 5 秒以上必要。
+      if (res.status === 429) {
+        lastError = new Error(`Keepa returned 429 (rate limit / token refill in progress)`);
+        await new Promise((r) => setTimeout(r, (i + 1) * 3000));
+        continue;
+      }
+      // 500/503 は短く待ってリトライ
+      if (res.status >= 500) {
+        lastError = new Error(`Keepa returned ${res.status}`);
         await new Promise((r) => setTimeout(r, (i + 1) * 600));
         continue;
       }
+      // 4xx (rate limit 以外) は再試行しない
       return res;
     } catch (err) {
       lastError = err;
       await new Promise((r) => setTimeout(r, (i + 1) * 600));
     }
   }
-  throw lastError ?? new Error("Keepa request failed");
+  // どのケースでもログに残せるよう lastStatus を埋める
+  throw lastError ?? new Error(`Keepa request failed after ${attempts} attempts (last status ${lastStatus})`);
 }
 
 /** Keepa Search で得られる軽量な商品サマリ。 */
