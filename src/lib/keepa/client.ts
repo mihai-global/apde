@@ -43,7 +43,12 @@ export function keepaImagesToUrls(imagesCSV: string | undefined | null): string[
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((file) => `https://m.media-amazon.com/images/I/${file}`);
+    .map((file) => {
+      // Keepa は basename のみ返す場合と、拡張子付きで返す場合がある。
+      // どちらも m.media-amazon.com/images/I/ の下に存在するので、無ければ .jpg を補う。
+      const name = /\.(jpg|jpeg|png|gif|webp)$/i.test(file) ? file : `${file}.jpg`;
+      return `https://m.media-amazon.com/images/I/${name}`;
+    });
 }
 
 const ARRAY_INDEX = {

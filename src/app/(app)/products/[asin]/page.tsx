@@ -41,12 +41,27 @@ export default async function ProductDetailPage({
     listWatchlist(),
   ]);
 
+  // products テーブルから取得した実データ (Keepa enrichment 済) を override として渡す。
+  // これにより cache hit でも detail ページで実 weight / review / seller / rating が反映される。
+  const productOverrides: Partial<import("@/lib/types").AsinMetrics> = {};
+  if (product) {
+    if (product.imageUrl) productOverrides.imageUrl = product.imageUrl;
+    if (product.weight_grams > 0) {
+      productOverrides.weightGrams = product.weight_grams;
+      productOverrides.sizeTier =
+        product.weight_grams > 1000 ? "OVERSIZE" : product.weight_grams <= 500 ? "SMALL_STANDARD" : "LARGE_STANDARD";
+    }
+    if (product.review_count > 0) productOverrides.reviewCount = product.review_count;
+    if (product.seller_count > 0) productOverrides.sellerCount = product.seller_count;
+    if (product.rating != null && product.rating > 0) productOverrides.rating = product.rating;
+    if (product.current_price > 0) productOverrides.currentPrice = product.current_price;
+  }
   const analysis = await analyzeProduct({
     asin,
     title: product?.title,
     category: product?.category,
     brand: product?.brand,
-    metrics: product?.imageUrl ? { imageUrl: product.imageUrl } : undefined,
+    metrics: Object.keys(productOverrides).length > 0 ? productOverrides : undefined,
   });
 
   const watchlistStatus = watchlist.find((w) => w.asin === asin)?.status ?? null;
