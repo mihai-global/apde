@@ -24,17 +24,18 @@ function toStringArray(value: unknown, fallback: string[]): string[] {
   return arr.length >= 1 ? arr.slice(0, 5) : fallback;
 }
 
-// AI Studio キーは v1beta path 経由で bare の "gemini-1.5-flash" が
-// 404 になるプロジェクトがある。 "-latest" alias は安定して解決される。
-const DEFAULT_MODEL = "gemini-1.5-flash-latest";
+// 2026 以降に発行された AI Studio キーは gemini-1.5-* に到達できないプロジェクトが多く、
+// list-models でも 2.0/2.5 系のみ返ってくるケースがある。チェーンは 2.5 → 2.0 を優先。
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
-// 1 つ目が失敗した場合に試す候補チェーン (最初に成功したものを採用)。
+// 最初に成功したモデルを採用。 list-models の典型的な顔ぶれを上から並べている。
 const FALLBACK_CHAIN: string[] = [
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-flash-002",
-  "gemini-1.5-flash",
-  "gemini-1.5-flash-8b-latest",
-  "gemini-2.0-flash-exp",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-001",
+  "gemini-2.0-flash-lite",
+  "gemini-2.5-pro",
+  "gemini-1.5-flash-latest", // 古いプロジェクト向け最終手段
 ];
 
 function resolveModelChain(): string[] {
