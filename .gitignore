@@ -1,10 +1,44 @@
+# dependencies
 node_modules/
+.pnpm-store/
+
+# next.js
 .next/
+out/
 dist/
-tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# vercel
+.vercel/
+
+# environment
 .env
 .env.local
 .env.*.local
+.env.development.local
+.env.production.local
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# testing / coverage
+coverage/
+.nyc_output/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*~
+
+# tooling artifacts (Playwright, screenshots)
 .playwright-mcp/
 phase-*.png
 phase2-*.png
