@@ -10,6 +10,7 @@ const NAV: ReadonlyArray<{ href: string; label: string; matchPrefix?: string }> 
   { href: "/search", label: "探索", matchPrefix: "/search" },
   { href: "/watchlist", label: "監視リスト" },
   { href: "/dictionary", label: "辞書" },
+  { href: "/diagnostics", label: "診断", matchPrefix: "/diagnostics" },
 ];
 
 interface AppHeaderProps {
