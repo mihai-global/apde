@@ -24,9 +24,10 @@ function toStringArray(value: unknown, fallback: string[]): string[] {
   return arr.length >= 1 ? arr.slice(0, 5) : fallback;
 }
 
-// 既定モデル: AI Studio の標準 API キー (AIzaSy…) で確実に動く現行モデル。
-// gemini-2.5-pro は Vertex / 有料プラン向けで、AI Studio キーでは 404 / PERMISSION_DENIED になりやすい。
-const DEFAULT_MODEL = "gemini-2.0-flash";
+// 既定モデル: AI Studio の標準 API キー (AIzaSy…) + @google/generative-ai SDK で
+// 確実に動く現行モデル。 gemini-2.0-flash は SDK 0.24.x の v1beta パスで 404 を返す
+// ことがあるため、デフォルトは 1.5-flash に固定。 gemini-2.5-pro は Vertex/有料向け。
+const DEFAULT_MODEL = "gemini-1.5-flash";
 function resolveModelName(): string {
   const override = process.env.GEMINI_MODEL?.trim();
   return override && override.length > 0 ? override : DEFAULT_MODEL;
@@ -53,7 +54,7 @@ export function getLastGeminiError(): { at: string; message: string } | null {
 function summarizeError(err: unknown): string {
   if (err instanceof Error) {
     // Google SDK は err.message にステータスや理由を含めることが多い
-    return err.message.length > 240 ? `${err.message.slice(0, 240)}…` : err.message;
+    return err.message.length > 480 ? `${err.message.slice(0, 480)}…` : err.message;
   }
   return String(err);
 }
@@ -124,7 +125,7 @@ export async function geminiInsight(req: InsightRequest): Promise<StrategicInsig
     return {
       ...fallback,
       // 診断 UI で見えるようにモデル名にエラー要約を含める
-      model: `gemini-fallback (${modelName}: ${message.slice(0, 90)})`,
+      model: `gemini-fallback (${modelName}: ${message.slice(0, 200)})`,
       source: "hybrid",
     };
   }
