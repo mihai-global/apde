@@ -8,6 +8,7 @@ import { MarketCharts } from "@/components/detail/MarketCharts";
 import { MemoEditor } from "@/components/detail/MemoEditor";
 import { ProfitCalculator } from "@/components/detail/ProfitCalculator";
 import { ScoreBreakdownSection } from "@/components/detail/ScoreBreakdown";
+import { SourceBadge } from "@/components/primitives/SourceBadge";
 import { ThumbPlaceholder } from "@/components/primitives/ThumbPlaceholder";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { fmtNum } from "@/lib/format";
@@ -79,7 +80,10 @@ export default async function ProductDetailPage({
               <ThumbPlaceholder seed={thumbSeed} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="eyebrow">{analysis.category} · ASIN {analysis.asin}</div>
+              <div className="eyebrow" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span>{analysis.category} · ASIN {analysis.asin}</span>
+                <SourceBadge source={analysis.source} detail={`LLM: ${analysis.insight.model}`} />
+              </div>
               <h1 className="h1" style={{ marginTop: 8, fontSize: 28 }}>
                 {analysis.title}
               </h1>

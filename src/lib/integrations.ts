@@ -70,17 +70,21 @@ function determineSource(keepaLive: boolean, llmLive: boolean): DataSource {
 async function tryEnrichWithKeepa(
   metrics: AsinMetrics,
 ): Promise<{ metrics: AsinMetrics; live: boolean }> {
-  if (mockMode.keepa) return { metrics, live: false };
+  if (mockMode.keepa) {
+    console.info("[apde:keepa] mockMode (KEEPA_API_KEY missing) — using mock");
+    return { metrics, live: false };
+  }
 
-  // まずキャッシュ確認
+  // まずキャッシュ確認 (キャッシュは price_history が空なら無効扱い)
   const cached = await getCachedKeepa(metrics.asin);
+  const cacheUsable = cached && cached.price_history.length > 0;
   let series: KeepaSeries | null = null;
   let titleFromKeepa: string | undefined;
   let brandFromKeepa: string | undefined;
   let categoryFromKeepa: string | undefined;
   let imageUrlFromKeepa: string | undefined;
 
-  if (cached) {
+  if (cacheUsable) {
     series = {
       price: cached.price_history,
       bsr: cached.bsr_history,
@@ -89,13 +93,31 @@ async function tryEnrichWithKeepa(
       reviewCount: [],
       rating: [],
     };
+    console.info("[apde:keepa] cache hit", {
+      asin: metrics.asin,
+      pricePoints: series.price.length,
+      cachedAt: cached.updated_at,
+    });
   } else {
     try {
+      console.info("[apde:keepa] fetching live", { asin: metrics.asin });
       series = await fetchKeepaSeries(metrics.asin);
       titleFromKeepa = series.title;
       brandFromKeepa = series.brand;
       categoryFromKeepa = series.category;
       imageUrlFromKeepa = series.imageUrl;
+      console.info("[apde:keepa] live fetch ok", {
+        asin: metrics.asin,
+        pricePoints: series.price.length,
+        title: series.title?.slice(0, 30),
+      });
+
+      if (series.price.length === 0) {
+        // 商品はあるが履歴空 — キャッシュせず mock にフォールバック (要件 5.2 部分結果)
+        console.warn("[apde:keepa] live returned no price history; not caching", { asin: metrics.asin });
+        return { metrics, live: false };
+      }
+
       // 24h キャッシュ
       const row: KeepaDataRow = {
         asin: metrics.asin,
@@ -132,16 +154,15 @@ async function tryEnrichWithKeepa(
       });
       await upsertKeepaCache(row);
     } catch (err) {
-      console.warn("[apde] keepa enrich failed; keeping mock", {
+      console.warn("[apde:keepa] enrich failed; keeping mock", {
         asin: metrics.asin,
-        err: err instanceof Error ? err.message : err,
+        err: err instanceof Error ? err.message : String(err),
       });
       return { metrics, live: false };
     }
   }
 
   if (!series || series.price.length === 0) {
-    // データ取れず → モックのまま
     return { metrics, live: false };
   }
 
