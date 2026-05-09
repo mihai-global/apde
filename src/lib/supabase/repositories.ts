@@ -18,6 +18,7 @@ import type {
   DictionaryRow,
   DictionaryType,
   DiscoveryRunRow,
+  KeepaDataRow,
   PurchaseFeedbackRow,
   WatchlistRow,
   WatchlistStatus,
@@ -27,6 +28,57 @@ import type {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+// ─── keepa cache ─────────────────────────────────────────────────────────
+
+declare global {
+  // mockMode 用の in-memory keepa cache。
+  // eslint-disable-next-line no-var
+  var __apdeKeepaCache: Map<string, KeepaDataRow> | undefined;
+}
+
+function getKeepaMemCache(): Map<string, KeepaDataRow> {
+  if (!globalThis.__apdeKeepaCache) globalThis.__apdeKeepaCache = new Map();
+  return globalThis.__apdeKeepaCache;
+}
+
+const KEEPA_TTL_MS = 24 * 60 * 60 * 1000;
+
+export async function getCachedKeepa(asin: string): Promise<KeepaDataRow | null> {
+  const fresh = (row: KeepaDataRow): boolean =>
+    Date.parse(row.updated_at) >= Date.now() - KEEPA_TTL_MS;
+  if (mockMode.supabase) {
+    const row = getKeepaMemCache().get(asin);
+    return row && fresh(row) ? row : null;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("keepa_data")
+    .select("*")
+    .eq("asin", asin)
+    .maybeSingle();
+  if (error) {
+    console.warn("[apde] keepa cache read failed", error);
+    return null;
+  }
+  if (!data) return null;
+  const row = data as KeepaDataRow;
+  return fresh(row) ? row : null;
+}
+
+export async function upsertKeepaCache(row: KeepaDataRow): Promise<void> {
+  if (mockMode.supabase) {
+    getKeepaMemCache().set(row.asin, row);
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const { error } = await supabase.from("keepa_data").upsert(row, { onConflict: "asin" });
+  if (error) {
+    console.warn("[apde] keepa cache write failed", error);
+  }
 }
 
 // ─── products ─────────────────────────────────────────────────────────
@@ -115,6 +167,71 @@ export async function listProductSummaries(asins?: string[]): Promise<ProductSum
 export async function getProductSummary(asin: string): Promise<ProductSummary | null> {
   const list = await listProductSummaries([asin]);
   return list[0] ?? null;
+}
+
+/**
+ * 商品マスタの最低限の upsert。Keepa から取得した title/brand/category などをそのまま反映する。
+ * mockMode 時は in-memory store の products に書き戻す (詳細フィールドはモック既定値)。
+ */
+export async function upsertProductMaster(input: {
+  asin: string;
+  title?: string;
+  brand?: string;
+  category?: string;
+  current_price?: number;
+  review_count?: number;
+  seller_count?: number;
+  image_url?: string | null;
+  rating?: number | null;
+}): Promise<void> {
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const existing = store.products.get(input.asin);
+    store.products.set(input.asin, {
+      asin: input.asin,
+      title: input.title ?? existing?.title ?? input.asin,
+      category: input.category ?? existing?.category ?? "未分類",
+      brand: input.brand ?? existing?.brand ?? "",
+      current_price: input.current_price ?? existing?.current_price ?? 0,
+      weight_grams: existing?.weight_grams ?? 0,
+      size_tier: existing?.size_tier ?? "SMALL_STANDARD",
+      review_count: input.review_count ?? existing?.review_count ?? 0,
+      seller_count: input.seller_count ?? existing?.seller_count ?? 0,
+      brand_strength: existing?.brand_strength ?? 0,
+      rating: input.rating ?? existing?.rating ?? 0,
+      is_hazmat: existing?.is_hazmat ?? false,
+      is_regulated: existing?.is_regulated ?? false,
+      monthly_sales: existing?.monthly_sales ?? 0,
+      gross_margin_pct: existing?.gross_margin_pct ?? 0,
+      decision: existing?.decision ?? "CONDITIONAL_GO",
+      score: existing?.score ?? 0,
+      breakdown: existing?.breakdown ?? { price: 0, size: 0, comp: 0, stab: 0, oem: 0 },
+      concern: existing?.concern ?? "",
+      seed_keepa: existing?.seed_keepa ?? Math.abs([...input.asin].reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 0)),
+      image_url: input.image_url ?? existing?.image_url ?? null,
+    });
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  // products テーブルは title / category が NOT NULL。新規挿入時のフォールバックを必ず入れる。
+  const payload: Record<string, unknown> = {
+    asin: input.asin,
+    title: input.title ?? input.asin,
+    category: input.category ?? "未分類",
+  };
+  if (input.brand) payload.brand = input.brand;
+  if (input.current_price !== undefined) payload.current_price = input.current_price;
+  if (input.review_count !== undefined) payload.review_count = input.review_count;
+  if (input.seller_count !== undefined) payload.seller_count = input.seller_count;
+  if (input.image_url !== undefined) payload.image_url = input.image_url;
+  if (input.rating !== undefined && input.rating !== null) payload.rating = input.rating;
+  const { error } = await supabase
+    .from("products")
+    .upsert(payload, { onConflict: "asin" });
+  if (error) {
+    console.warn("[apde] products upsert failed", error);
+  }
 }
 
 // ─── watchlist ─────────────────────────────────────────────────────────

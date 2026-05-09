@@ -13,6 +13,8 @@ interface KeepaProductResponse {
     asin: string;
     title?: string;
     brand?: string;
+    productGroup?: string;
+    categoryTree?: Array<{ name?: string }>;
     csv?: Array<number[] | null>;
     imagesCSV?: string; // 例: "61abc.jpg,62def.jpg,..."
   }>;
@@ -38,6 +40,8 @@ const ARRAY_INDEX = {
   USED: 2,
   SALES_RANK: 3,
   COUNT_NEW: 11, // approximate seller count
+  RATING: 16, // ×10 (e.g. 45 = 4.5)
+  COUNT_REVIEWS: 17,
   BUY_BOX: 18,
 } as const;
 
@@ -63,8 +67,13 @@ export interface KeepaSeries {
   bsr: TimeSeriesPoint[];
   sellers: TimeSeriesPoint[];
   buyBox: TimeSeriesPoint[];
+  reviewCount: TimeSeriesPoint[];
+  rating: TimeSeriesPoint[]; // value は ×10 (45 → 4.5)
   /** メイン商品画像 URL (imagesCSV の先頭) */
   imageUrl?: string;
+  title?: string;
+  brand?: string;
+  category?: string;
 }
 
 async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
@@ -104,11 +113,17 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
 
   const csv = product.csv ?? [];
   const imageUrls = keepaImagesToUrls(product.imagesCSV);
+  const categoryName = product.categoryTree?.[product.categoryTree.length - 1]?.name;
   return {
     price: csvToSeries(csv[ARRAY_INDEX.AMAZON] ?? csv[ARRAY_INDEX.NEW]),
     bsr: csvToSeries(csv[ARRAY_INDEX.SALES_RANK]),
     sellers: csvToSeries(csv[ARRAY_INDEX.COUNT_NEW]),
     buyBox: csvToSeries(csv[ARRAY_INDEX.BUY_BOX]),
+    reviewCount: csvToSeries(csv[ARRAY_INDEX.COUNT_REVIEWS]),
+    rating: csvToSeries(csv[ARRAY_INDEX.RATING]),
     imageUrl: imageUrls[0],
+    title: product.title,
+    brand: product.brand,
+    category: categoryName ?? product.productGroup,
   };
 }

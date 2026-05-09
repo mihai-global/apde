@@ -2,6 +2,7 @@
 // 各ステップは小さなモジュールに分離し、ここでは流れだけを記述する。
 import { mockMode } from "@/lib/env";
 import { evaluateGates, decisionFromScore, downgradeByGates } from "@/lib/gates";
+import { fetchKeepaSeries, type KeepaSeries } from "@/lib/keepa/client";
 import { deriveKeepaMetrics } from "@/lib/keepa/derive";
 import { createMockMetrics } from "@/lib/keepa/mock";
 import { generateKeywords } from "@/lib/keywords/generate";
@@ -9,6 +10,11 @@ import { evaluateExclusion, toExcludedCandidate } from "@/lib/exclusion/filter";
 import { generateInsight } from "@/lib/llm";
 import { computeProfit } from "@/lib/profit";
 import { scoreAsin } from "@/lib/scoring";
+import {
+  getCachedKeepa,
+  upsertKeepaCache,
+  upsertProductMaster,
+} from "@/lib/supabase/repositories";
 import type {
   AnalysisResult,
   AnalyzeRequest,
@@ -19,6 +25,7 @@ import type {
   DiscoveryRequest,
   DiscoveryResponse,
   ExcludedCandidate,
+  KeepaDataRow,
   RefreshReport,
 } from "@/lib/types";
 
@@ -45,6 +52,123 @@ interface AnalyzeOptions {
   metrics: AsinMetrics;
   source: DataSource;
   profitOverrides?: { costRate?: number; cvr?: number; cpc?: number };
+}
+
+function determineSource(keepaLive: boolean, llmLive: boolean): DataSource {
+  const liveCount = [keepaLive, llmLive].filter(Boolean).length;
+  if (liveCount === 2) return "live";
+  if (liveCount === 0) return "mock";
+  return "hybrid";
+}
+
+/**
+ * Keepa の実時系列をモック由来の AsinMetrics に上書きマージする。
+ * 1) 24h キャッシュ (keepa_data) を優先
+ * 2) ミス時は Keepa を呼び、結果を products / keepa_data に保存
+ * 3) 失敗 (mockMode / fake ASIN / API 失敗) はモックのまま返す
+ */
+async function tryEnrichWithKeepa(
+  metrics: AsinMetrics,
+): Promise<{ metrics: AsinMetrics; live: boolean }> {
+  if (mockMode.keepa) return { metrics, live: false };
+
+  // まずキャッシュ確認
+  const cached = await getCachedKeepa(metrics.asin);
+  let series: KeepaSeries | null = null;
+  let titleFromKeepa: string | undefined;
+  let brandFromKeepa: string | undefined;
+  let categoryFromKeepa: string | undefined;
+  let imageUrlFromKeepa: string | undefined;
+
+  if (cached) {
+    series = {
+      price: cached.price_history,
+      bsr: cached.bsr_history,
+      sellers: cached.seller_history,
+      buyBox: cached.buy_box_history,
+      reviewCount: [],
+      rating: [],
+    };
+  } else {
+    try {
+      series = await fetchKeepaSeries(metrics.asin);
+      titleFromKeepa = series.title;
+      brandFromKeepa = series.brand;
+      categoryFromKeepa = series.category;
+      imageUrlFromKeepa = series.imageUrl;
+      // 24h キャッシュ
+      const row: KeepaDataRow = {
+        asin: metrics.asin,
+        price_history: series.price,
+        bsr_history: series.bsr,
+        seller_history: series.sellers,
+        buy_box_history: series.buyBox,
+        derived_metrics: {
+          priceCv90d: 0,
+          saleRatio90d: 0,
+          buyBoxConcentration: 0,
+          priceDropRate90d: 0,
+        },
+        source: "live",
+        updated_at: new Date().toISOString(),
+      };
+      // FK 制約があるため、まず products に最低限の行を upsert
+      await upsertProductMaster({
+        asin: metrics.asin,
+        title: titleFromKeepa,
+        brand: brandFromKeepa,
+        category: categoryFromKeepa,
+        image_url: imageUrlFromKeepa ?? null,
+        current_price: series.price.at(-1)?.value,
+        seller_count: series.sellers.at(-1)?.value
+          ? Math.round(series.sellers.at(-1)!.value)
+          : undefined,
+        review_count: series.reviewCount.at(-1)?.value
+          ? Math.round(series.reviewCount.at(-1)!.value)
+          : undefined,
+        rating: series.rating.at(-1)?.value
+          ? series.rating.at(-1)!.value / 10
+          : undefined,
+      });
+      await upsertKeepaCache(row);
+    } catch (err) {
+      console.warn("[apde] keepa enrich failed; keeping mock", {
+        asin: metrics.asin,
+        err: err instanceof Error ? err.message : err,
+      });
+      return { metrics, live: false };
+    }
+  }
+
+  if (!series || series.price.length === 0) {
+    // データ取れず → モックのまま
+    return { metrics, live: false };
+  }
+
+  const enriched: AsinMetrics = { ...metrics };
+  enriched.priceHistory = series.price;
+  if (series.bsr.length > 0) enriched.bsrHistory = series.bsr;
+  if (series.sellers.length > 0) {
+    enriched.sellerCountHistory = series.sellers;
+    const lastSellers = series.sellers.at(-1)!.value;
+    enriched.sellerCount = Math.max(1, Math.round(lastSellers));
+  }
+  if (series.buyBox.length > 0) enriched.buyBoxHistory = series.buyBox;
+
+  const last = series.price.at(-1)!.value;
+  const first = series.price.at(0)!.value;
+  const avg = series.price.reduce((s, p) => s + p.value, 0) / series.price.length;
+  enriched.currentPrice = Math.round(last);
+  enriched.averagePrice90d = Math.round(avg);
+  const drop = first > 0 ? ((first - last) / first) * 100 : 0;
+  enriched.priceDropRate = Math.max(0, Math.round(drop));
+
+  if (titleFromKeepa) enriched.title = titleFromKeepa;
+  if (brandFromKeepa) enriched.brand = brandFromKeepa;
+  if (categoryFromKeepa) enriched.category = categoryFromKeepa;
+  if (imageUrlFromKeepa) enriched.imageUrl = imageUrlFromKeepa;
+
+  return { metrics: enriched, live: true };
 }
 
 export async function analyzeMetrics(opts: AnalyzeOptions): Promise<AnalysisResult> {
@@ -190,15 +314,22 @@ export async function discoverProducts(
 }
 
 export async function analyzeProduct(input: AnalyzeRequest): Promise<AnalysisResult> {
-  const source = mockMode.resolveSource();
-  const metrics = createMockMetrics({
+  const baseMetrics = createMockMetrics({
     asin: input.asin,
     title: input.title,
     category: input.category ?? "未分類",
     brand: input.brand,
     overrides: input.metrics,
   });
-  return analyzeMetrics({ metrics, source, profitOverrides: input.profitOverrides });
+  const { metrics, live: keepaLive } = await tryEnrichWithKeepa(baseMetrics);
+  // 一旦 source を hybrid で組み立て、insight.source の実態に応じて最終決定する。
+  const result = await analyzeMetrics({
+    metrics,
+    source: "hybrid",
+    profitOverrides: input.profitOverrides,
+  });
+  const llmLive = result.insight.source !== "mock";
+  return { ...result, source: determineSource(keepaLive, llmLive) };
 }
 
 export async function refreshCategories(categories: string[]): Promise<RefreshReport> {
