@@ -23,10 +23,17 @@ interface ProbeResult {
   };
 }
 
+interface ModelsListResult {
+  total?: number;
+  supported?: Array<{ id: string; displayName?: string; description?: string }>;
+  error?: string;
+}
+
 export function ProbeForm() {
   const [asin, setAsin] = useState("B0CXM7K2PQ");
   const [result, setResult] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelsListResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   function runProbe() {
@@ -50,9 +57,23 @@ export function ProbeForm() {
     });
   }
 
+  function listModels() {
+    setError(null);
+    setModels(null);
+    startTransition(async () => {
+      try {
+        const res = await fetch("/api/diagnostics/list-models", { cache: "no-store" });
+        const data = (await res.json()) as ModelsListResult;
+        setModels(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <input
           className="input"
           value={asin}
@@ -68,10 +89,46 @@ export function ProbeForm() {
         >
           {pending ? "Probing…" : "Probe"} <span className="arrow">›</span>
         </button>
+        <button type="button" className="pill" onClick={listModels} disabled={pending}>
+          {pending ? "List…" : "Gemini モデル一覧"} <span className="arrow">›</span>
+        </button>
       </div>
 
       {error ? (
         <div className="error-banner" role="alert">{error}</div>
+      ) : null}
+
+      {models ? (
+        models.error ? (
+          <div className="error-banner" role="alert" style={{ marginBottom: 16 }}>
+            {models.error}
+          </div>
+        ) : (
+          <div
+            style={{
+              marginBottom: 16,
+              padding: 16,
+              border: "1px solid var(--border-1)",
+              maxHeight: 240,
+              overflow: "auto",
+            }}
+          >
+            <div className="eyebrow" style={{ marginBottom: 8 }}>
+              利用可能モデル ({models.supported?.length ?? 0} / 全 {models.total ?? 0})
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 4, fontSize: 12, fontFamily: "var(--font-mono)" }}>
+              {(models.supported ?? []).map((m) => (
+                <div key={m.id}>
+                  <strong style={{ fontFamily: "var(--font-mono)" }}>{m.id}</strong>
+                  {m.displayName ? <span className="muted"> — {m.displayName}</span> : null}
+                </div>
+              ))}
+            </div>
+            <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
+              一覧から好きな ID をコピーして Vercel env <code>GEMINI_MODEL</code> に設定 → Redeploy。
+            </div>
+          </div>
+        )
       ) : null}
 
       {result ? (
