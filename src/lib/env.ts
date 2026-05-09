@@ -2,6 +2,10 @@
 // - サーバー側でしか参照してはいけない値を server 名前空間にまとめる。
 // - NEXT_PUBLIC_* のみブラウザに露出する。
 // - 必須キーが揃わない場合は自動的に mockMode に倒し、Keepa/Gemini/Supabase なしでも UI が動くようにする。
+//
+// 重要: process.env.SUPABASE_SERVICE_ROLE_KEY はブラウザバンドルでは undefined になるため、
+// クライアントから参照される `configured` フラグには含めない。書き込みに必要な service role 用は
+// `adminConfigured` で別フラグとして公開する。
 
 const truthy = (value: string | undefined): boolean =>
   typeof value === "string" && value.trim().length > 0;
@@ -10,8 +14,10 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const supabaseConfigured =
-  truthy(supabaseUrl) && truthy(supabaseAnonKey) && truthy(supabaseServiceRoleKey);
+// ブラウザでも判定可能 (URL + ANON_KEY のみ。Auth + 公開クエリで使う)
+const supabasePublicConfigured = truthy(supabaseUrl) && truthy(supabaseAnonKey);
+// サーバ専用 (Service Role が必要な書き込み・privileged read で使う)
+const supabaseAdminConfigured = supabasePublicConfigured && truthy(supabaseServiceRoleKey);
 
 const llmProviderRaw = process.env.LLM_PROVIDER ?? "gemini";
 const allowedProviders = ["gemini", "openai", "anthropic", "mock"] as const;
@@ -36,7 +42,8 @@ export const env = {
     url: supabaseUrl ?? "",
     anonKey: supabaseAnonKey ?? "",
     serviceRoleKey: supabaseServiceRoleKey ?? "",
-    configured: supabaseConfigured,
+    configured: supabasePublicConfigured, // ブラウザ Auth が動く水準
+    adminConfigured: supabaseAdminConfigured, // 書き込みリポジトリが使える水準
   },
   keepa: {
     apiKey: process.env.KEEPA_API_KEY ?? "",
@@ -58,17 +65,19 @@ export const env = {
 export type Env = typeof env;
 export type { LlmProvider };
 
-// mockMode: Supabase の認証情報が揃っていない場合は自動で in-memory にフォールバック。
-// Keepa/LLM はそれぞれ単独で mock に倒すため、env.keepa.configured / env.llm.configured を直接参照する。
+// mockMode: 書き込みストアの切替判定。
+// Service Role が無いと Supabase への書き込み (analysis / discovery_runs / api_usage…) ができないため、
+// admin が揃っていない場合は in-memory にフォールバックする。
+// ※ middleware の auth ガードもこれで bypass されるが、Auth は publicConfigured で動くため
+//   「ログインだけ Supabase で行うが書き込みは in-memory」というモードでも実害はない。
 const isMockProvider = llmProvider === "mock";
 
 export const mockMode = {
-  supabase: !supabaseConfigured,
+  supabase: !supabaseAdminConfigured,
   keepa: !keepaConfigured,
   llm: isMockProvider || !llmKeyConfigured,
-  // データソースタグ: hybrid = 一部 live、live = 全 live、mock = 完全 mock
   resolveSource(): "live" | "hybrid" | "mock" {
-    const liveCount = [keepaConfigured, llmKeyConfigured, supabaseConfigured].filter(Boolean)
+    const liveCount = [keepaConfigured, llmKeyConfigured, supabaseAdminConfigured].filter(Boolean)
       .length;
     if (liveCount === 3) return "live";
     if (liveCount === 0) return "mock";

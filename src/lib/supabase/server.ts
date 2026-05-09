@@ -28,7 +28,7 @@ export async function getServerSupabase(): Promise<SupabaseClient | null> {
 
 let cachedAdmin: SupabaseClient | null = null;
 export function getServiceRoleSupabase(): SupabaseClient | null {
-  if (!env.supabase.configured) return null;
+  if (!env.supabase.adminConfigured) return null;
   if (cachedAdmin) return cachedAdmin;
   cachedAdmin = createSupabaseClient(env.supabase.url, env.supabase.serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
