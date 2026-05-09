@@ -96,6 +96,49 @@ async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
   throw lastError ?? new Error("Keepa request failed");
 }
 
+/** Keepa Search で得られる軽量な商品サマリ。 */
+export interface KeepaSearchHit {
+  asin: string;
+  title?: string;
+  brand?: string;
+  imageUrl?: string;
+}
+
+interface KeepaSearchResponse {
+  tokensConsumed?: number;
+  products?: Array<{
+    asin: string;
+    title?: string;
+    brand?: string;
+    imagesCSV?: string;
+  }>;
+}
+
+/**
+ * Keepa Search API でキーワード検索 → ASIN リストを返す。
+ * `term` を URL エンコードして渡す。 type=product, domain=5 (Amazon.co.jp)。
+ * 1 回 5 トークン、1 ページあたり最大 40 件。
+ */
+export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearchHit[]> {
+  if (!env.keepa.configured) {
+    throw new Error("Keepa API key not configured");
+  }
+  const url = `${BASE_URL}/search?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&type=product&term=${encodeURIComponent(term)}&page=0`;
+  const res = await fetchWithRetry(url);
+  if (!res.ok) {
+    throw new Error(`Keepa search returned ${res.status}`);
+  }
+  const data: KeepaSearchResponse = await res.json();
+  void usage.keepa("/search", data.tokensConsumed ?? 5);
+  const products = data.products ?? [];
+  return products.slice(0, limit).map((p) => ({
+    asin: p.asin,
+    title: p.title,
+    brand: p.brand,
+    imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+  }));
+}
+
 export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
   if (!env.keepa.configured) {
     throw new Error("Keepa API key not configured");

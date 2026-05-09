@@ -2,7 +2,7 @@
 // 各ステップは小さなモジュールに分離し、ここでは流れだけを記述する。
 import { mockMode } from "@/lib/env";
 import { evaluateGates, decisionFromScore, downgradeByGates } from "@/lib/gates";
-import { fetchKeepaSeries, type KeepaSeries } from "@/lib/keepa/client";
+import { fetchKeepaSeries, searchKeepa, type KeepaSearchHit, type KeepaSeries } from "@/lib/keepa/client";
 import { deriveKeepaMetrics } from "@/lib/keepa/derive";
 import { createMockMetrics } from "@/lib/keepa/mock";
 import { generateKeywords } from "@/lib/keywords/generate";
@@ -272,6 +272,21 @@ export interface DiscoverContext {
   dictionary?: DictionaryRow[];
 }
 
+/**
+ * Keepa Search で得た hit を AsinMetrics に流し込むためのシード生成。
+ * フィールドはほとんどモック既定だが、tryEnrichWithKeepa が後段で
+ * 価格・BSR・出品者・レビュー数等を実データで上書きする。
+ */
+function createSeedMetricsFromSearch(hit: KeepaSearchHit, category: string): AsinMetrics {
+  return createMockMetrics({
+    asin: hit.asin,
+    title: hit.title ?? hit.asin,
+    brand: hit.brand,
+    category,
+    overrides: { imageUrl: hit.imageUrl },
+  });
+}
+
 export async function discoverProducts(
   input: DiscoveryRequest,
   ctx: DiscoverContext = {},
@@ -280,23 +295,75 @@ export async function discoverProducts(
   const limit = Math.min(Math.max(input.limit ?? 20, 5), 100);
   const applyDictionary = input.applyDictionary ?? true;
   const { keywords } = generateKeywords(input.category);
-  const source = mockMode.resolveSource();
   const dictionary = applyDictionary ? (ctx.dictionary ?? []) : [];
 
-  const generated: AsinMetrics[] = keywords.flatMap((keyword, keywordIndex) =>
-    Array.from({ length: 3 }, (_, productIndex) =>
-      createMockMetrics({
-        category: input.category,
-        keyword,
-        index: keywordIndex * 3 + productIndex,
-      }),
-    ),
-  );
+  let useLive = !mockMode.keepa;
+  let collected: AsinMetrics[] = [];
+
+  if (useLive) {
+    // Keepa Search で 5 軸キーワード上位 4 つから ASIN を集める。
+    // 1 検索 = 5 トークン、1 ページ最大 40 件。 perKeyword=8 なら 4 検索 = 20 トークン。
+    const searchKeywords = keywords.slice(0, 4);
+    const perKeyword = 8;
+    const seenAsins = new Set<string>();
+    const seeds: AsinMetrics[] = [];
+    const searchErrors: string[] = [];
+
+    for (const kw of searchKeywords) {
+      try {
+        const hits = await searchKeepa(kw, perKeyword);
+        for (const hit of hits) {
+          if (seenAsins.has(hit.asin)) continue;
+          seenAsins.add(hit.asin);
+          seeds.push(createSeedMetricsFromSearch(hit, input.category));
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("[apde:keepa] search failed", { keyword: kw, message });
+        searchErrors.push(message);
+      }
+    }
+
+    if (seeds.length === 0) {
+      // 全 search 失敗 → mock にフォールバック
+      console.warn("[apde:keepa] all searches failed, falling back to mock", { errors: searchErrors });
+      useLive = false;
+    } else {
+      collected = seeds;
+    }
+  }
+
+  if (!useLive) {
+    // mockMode.keepa = true、または search 全失敗時のフォールバック
+    collected = keywords.flatMap((keyword, keywordIndex) =>
+      Array.from({ length: 3 }, (_, productIndex) =>
+        createMockMetrics({
+          category: input.category,
+          keyword,
+          index: keywordIndex * 3 + productIndex,
+        }),
+      ),
+    );
+  }
+
+  // 各候補を Keepa Product で実データ補完 (キャッシュあり)。
+  // 並列度は 6 程度に抑えてレート制限を避ける。
+  const enrichedAll: Array<{ metrics: AsinMetrics; live: boolean }> = [];
+  const CHUNK = 6;
+  for (let i = 0; i < collected.length; i += CHUNK) {
+    const chunk = collected.slice(i, i + CHUNK);
+    const results = await Promise.all(
+      chunk.map((seed) =>
+        useLive ? tryEnrichWithKeepa(seed) : Promise.resolve({ metrics: seed, live: false }),
+      ),
+    );
+    enrichedAll.push(...results);
+  }
 
   // フィルタ + 除外
   const excluded: ExcludedCandidate[] = [];
   const survivors: AsinMetrics[] = [];
-  for (const metrics of generated) {
+  for (const { metrics } of enrichedAll) {
     if (input.minPrice && metrics.currentPrice < input.minPrice) continue;
     if (input.maxPrice && metrics.currentPrice > input.maxPrice) continue;
     if (input.maxReviews && metrics.reviewCount > input.maxReviews) continue;
@@ -308,12 +375,28 @@ export async function discoverProducts(
     survivors.push(metrics);
   }
 
-  // 全候補を分析 → ソートして上位 limit を採用
+  // 候補を analyzeMetrics で評価 (LLM は呼ばずキーワード生成だけのために createFallbackInsight 使用)。
+  // Discovery 時に 20 件分の LLM を回すのはコストが大きいので、当面 mock insight で済ませ、
+  // 詳細ページで初めて Gemini を呼ぶ運用とする。
   const analyzed = await Promise.all(
-    survivors.map((metrics) => analyzeMetrics({ metrics, source })),
+    survivors.map((metrics) => analyzeMetrics({ metrics, source: "hybrid" })),
   );
-  analyzed.sort((a, b) => b.score - a.score || b.monthlyRevenueEstimate - a.monthlyRevenueEstimate);
-  const top = analyzed.slice(0, limit);
+
+  // 各候補の source は keepa の live 状況に応じて再設定 (LLM はここでは未使用扱い)
+  const liveByAsin = new Map(enrichedAll.map(({ metrics, live }) => [metrics.asin, live]));
+  const finalAnalyzed = analyzed.map((r) => ({
+    ...r,
+    source: determineSource(liveByAsin.get(r.asin) ?? false, false),
+  }));
+  finalAnalyzed.sort(
+    (a, b) => b.score - a.score || b.monthlyRevenueEstimate - a.monthlyRevenueEstimate,
+  );
+  const top = finalAnalyzed.slice(0, limit);
+
+  // 全体 source: Discovery は LLM を呼ばない設計なので、
+  // Keepa が 1 件でも live なら "hybrid"、全 mock なら "mock"。
+  const anyLive = enrichedAll.some((e) => e.live);
+  const overallSource: DataSource = anyLive ? "hybrid" : "mock";
 
   return {
     runId: uuid(),
@@ -328,7 +411,7 @@ export async function discoverProducts(
     },
     candidates: top.map(toCandidate),
     excluded,
-    source,
+    source: overallSource,
     durationMs: Date.now() - startedAt,
     generatedAt: new Date().toISOString(),
   };
