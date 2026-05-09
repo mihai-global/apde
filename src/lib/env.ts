@@ -19,7 +19,8 @@ const supabasePublicConfigured = truthy(supabaseUrl) && truthy(supabaseAnonKey);
 // サーバ専用 (Service Role が必要な書き込み・privileged read で使う)
 const supabaseAdminConfigured = supabasePublicConfigured && truthy(supabaseServiceRoleKey);
 
-const llmProviderRaw = process.env.LLM_PROVIDER ?? "gemini";
+// 大文字小文字とトリムを許容 (LLM_PROVIDER=Gemini / " gemini " 等で mock に落ちないように)
+const llmProviderRaw = (process.env.LLM_PROVIDER ?? "gemini").trim().toLowerCase();
 const allowedProviders = ["gemini", "openai", "anthropic", "mock"] as const;
 type LlmProvider = (typeof allowedProviders)[number];
 const llmProvider: LlmProvider = (allowedProviders as readonly string[]).includes(llmProviderRaw)
@@ -30,6 +31,22 @@ const llmKeyConfigured =
   (llmProvider === "gemini" && truthy(process.env.GEMINI_API_KEY)) ||
   (llmProvider === "openai" && truthy(process.env.OPENAI_API_KEY)) ||
   (llmProvider === "anthropic" && truthy(process.env.ANTHROPIC_API_KEY));
+
+// サーバ起動時に一度だけ、なぜ mockMode.llm になったかをログ出力 (診断用)。
+// NEXT_PUBLIC_ ではないので server bundle のみ評価される。
+if (typeof window === "undefined") {
+  if (llmProviderRaw !== llmProvider) {
+    console.warn(
+      `[apde:env] LLM_PROVIDER="${process.env.LLM_PROVIDER}" は不正な値のため mock に落ちました (許可: ${allowedProviders.join("/")})`,
+    );
+  } else if (!llmKeyConfigured && llmProvider !== "mock") {
+    console.warn(
+      `[apde:env] LLM_PROVIDER="${llmProvider}" だが対応する API キーが未設定 (要 ${
+        llmProvider === "gemini" ? "GEMINI_API_KEY" : llmProvider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
+      })`,
+    );
+  }
+}
 
 const keepaConfigured = truthy(process.env.KEEPA_API_KEY);
 
