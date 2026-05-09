@@ -29,11 +29,28 @@ interface ModelsListResult {
   error?: string;
 }
 
+interface SearchProbeResult {
+  ok?: boolean;
+  status?: number;
+  url?: string;
+  durationMs?: number;
+  responseKeys?: string[];
+  productsCount?: number;
+  asinListCount?: number;
+  sampleAsins?: string[];
+  tokensConsumed?: number;
+  tokensLeft?: number;
+  rawHead?: string;
+  error?: string;
+}
+
 export function ProbeForm() {
   const [asin, setAsin] = useState("B0CXM7K2PQ");
+  const [searchTerm, setSearchTerm] = useState("デスク 整理");
   const [result, setResult] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<ModelsListResult | null>(null);
+  const [searchProbe, setSearchProbe] = useState<SearchProbeResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   function runProbe() {
@@ -71,6 +88,23 @@ export function ProbeForm() {
     });
   }
 
+  function runSearchProbe() {
+    setError(null);
+    setSearchProbe(null);
+    startTransition(async () => {
+      try {
+        const res = await fetch(
+          `/api/diagnostics/search-probe?term=${encodeURIComponent(searchTerm.trim())}`,
+          { cache: "no-store" },
+        );
+        const data = (await res.json()) as SearchProbeResult;
+        setSearchProbe(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
   return (
     <div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
@@ -87,12 +121,90 @@ export function ProbeForm() {
           onClick={runProbe}
           disabled={pending || !asin.trim()}
         >
-          {pending ? "Probing…" : "Probe"} <span className="arrow">›</span>
+          {pending ? "Probing…" : "ASIN Probe"} <span className="arrow">›</span>
         </button>
         <button type="button" className="pill" onClick={listModels} disabled={pending}>
           {pending ? "List…" : "Gemini モデル一覧"} <span className="arrow">›</span>
         </button>
       </div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <input
+          className="input"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          placeholder="デスク 整理"
+          style={{ maxWidth: 280 }}
+        />
+        <button
+          type="button"
+          className="pill"
+          onClick={runSearchProbe}
+          disabled={pending || !searchTerm.trim()}
+        >
+          {pending ? "Search…" : "Keepa Search Probe"} <span className="arrow">›</span>
+        </button>
+      </div>
+
+      {searchProbe ? (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 16,
+            border: "1px solid var(--border-1)",
+            borderColor: searchProbe.ok ? "var(--decision-go)" : "var(--decision-no)",
+            fontSize: 12,
+            lineHeight: 1.7,
+          }}
+        >
+          <div className="eyebrow" style={{ marginBottom: 8 }}>
+            Keepa Search 生レスポンス
+          </div>
+          <div>
+            <strong>Status:</strong> {searchProbe.status ?? "—"} ({searchProbe.durationMs} ms)
+          </div>
+          {searchProbe.error ? (
+            <div style={{ color: "var(--decision-no)" }}>
+              <strong>Error:</strong> {searchProbe.error}
+            </div>
+          ) : null}
+          <div>
+            <strong>Response keys:</strong>{" "}
+            <span className="mono">{searchProbe.responseKeys?.join(", ") ?? "—"}</span>
+          </div>
+          <div>
+            <strong>products[]:</strong> {searchProbe.productsCount ?? "—"} 件 ·{" "}
+            <strong>asinList[]:</strong> {searchProbe.asinListCount ?? "—"} 件
+          </div>
+          {searchProbe.sampleAsins && searchProbe.sampleAsins.length > 0 ? (
+            <div>
+              <strong>Sample ASINs:</strong>{" "}
+              <span className="mono">{searchProbe.sampleAsins.join(", ")}</span>
+            </div>
+          ) : null}
+          <div>
+            <strong>Tokens:</strong> 消費 {searchProbe.tokensConsumed ?? "—"} / 残{" "}
+            {searchProbe.tokensLeft ?? "—"}
+          </div>
+          {searchProbe.rawHead ? (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", color: "var(--fg-3)" }}>raw response (head 800 chars)</summary>
+              <pre
+                className="mono"
+                style={{
+                  marginTop: 8,
+                  padding: 8,
+                  background: "var(--bg-3)",
+                  fontSize: 11,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                }}
+              >
+                {searchProbe.rawHead}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? (
         <div className="error-banner" role="alert">{error}</div>
