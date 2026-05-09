@@ -8,6 +8,7 @@ import { ProbeForm } from "@/components/diagnostics/ProbeForm";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { env, mockMode } from "@/lib/env";
 import { yen } from "@/lib/format";
+import { getLastGeminiError } from "@/lib/llm/gemini";
 import {
   getCachedKeepa,
   listApiUsageThisMonth,
@@ -75,6 +76,7 @@ export default async function DiagnosticsPage() {
 
   // 任意 ASIN の cache 状態 (URL ?asin=B0XXX で渡せる)
   const recentKeepaCache = await getCachedKeepa("B0CXM7K2PQ");
+  const lastGeminiError = getLastGeminiError();
 
   return (
     <main className="page">
@@ -167,6 +169,35 @@ export default async function DiagnosticsPage() {
             </div>
           </div>
         </section>
+
+        {/* ── 直近の Gemini エラー (あれば) ── */}
+        {lastGeminiError ? (
+          <section style={{ marginBottom: 56 }}>
+            <div className="eyebrow" style={{ marginBottom: 16 }}>直近の Gemini エラー</div>
+            <div
+              style={{
+                padding: 16,
+                border: "1px solid var(--decision-no)",
+                background: "var(--decision-no-bg)",
+                fontSize: 13,
+                lineHeight: 1.7,
+                fontFamily: "var(--font-mono)",
+                wordBreak: "break-word",
+              }}
+            >
+              <div style={{ color: "var(--fg-3)", fontSize: 11, marginBottom: 8 }}>
+                {new Date(lastGeminiError.at).toLocaleString("ja-JP")}
+              </div>
+              <div style={{ color: "var(--decision-no)" }}>{lastGeminiError.message}</div>
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+              ヒント: <code>404 / model not found</code> なら <code>GEMINI_MODEL</code> env を
+              <code>gemini-2.0-flash</code> または <code>gemini-1.5-flash</code> に設定。
+              <code>PERMISSION_DENIED</code> なら API キーがそのモデルへの権限を持っていません。
+              <code>RESOURCE_EXHAUSTED</code> はレート制限/月次クォータです。
+            </div>
+          </section>
+        ) : null}
 
         {/* ── プローブ ── */}
         <section style={{ marginBottom: 56 }}>

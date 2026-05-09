@@ -24,20 +24,55 @@ function toStringArray(value: unknown, fallback: string[]): string[] {
   return arr.length >= 1 ? arr.slice(0, 5) : fallback;
 }
 
+// 既定モデル: AI Studio の標準 API キー (AIzaSy…) で確実に動く現行モデル。
+// gemini-2.5-pro は Vertex / 有料プラン向けで、AI Studio キーでは 404 / PERMISSION_DENIED になりやすい。
+const DEFAULT_MODEL = "gemini-2.0-flash";
+function resolveModelName(): string {
+  const override = process.env.GEMINI_MODEL?.trim();
+  return override && override.length > 0 ? override : DEFAULT_MODEL;
+}
+
+/**
+ * 直近の Gemini 失敗理由を保持する (診断 UI で参照)。
+ * Vercel の serverless 関数は短命なのでベストエフォートだが、
+ * 一連のリクエスト中なら拾える。
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __apdeLastGeminiError: { at: string; message: string } | undefined;
+}
+
+function recordError(message: string): void {
+  globalThis.__apdeLastGeminiError = { at: new Date().toISOString(), message };
+}
+
+export function getLastGeminiError(): { at: string; message: string } | null {
+  return globalThis.__apdeLastGeminiError ?? null;
+}
+
+function summarizeError(err: unknown): string {
+  if (err instanceof Error) {
+    // Google SDK は err.message にステータスや理由を含めることが多い
+    return err.message.length > 240 ? `${err.message.slice(0, 240)}…` : err.message;
+  }
+  return String(err);
+}
+
 export async function geminiInsight(req: InsightRequest): Promise<StrategicInsight> {
+  const fallback = createFallbackInsight({
+    decision: req.decision,
+    category: req.metrics.category,
+    brand: req.metrics.brand,
+    competitionLevel: req.competitionLevel,
+    summary: req.summary,
+  });
+
   if (!env.llm.geminiApiKey) {
-    return {
-      ...createFallbackInsight({
-        decision: req.decision,
-        category: req.metrics.category,
-        brand: req.metrics.brand,
-        competitionLevel: req.competitionLevel,
-        summary: req.summary,
-      }),
-      model: "gemini-unconfigured",
-    };
+    recordError("GEMINI_API_KEY is not set");
+    return { ...fallback, model: "gemini-unconfigured" };
   }
 
+  const modelName = resolveModelName();
   const prompt = buildInsightPrompt({
     metrics: req.metrics,
     decision: req.decision,
@@ -48,7 +83,7 @@ export async function geminiInsight(req: InsightRequest): Promise<StrategicInsig
 
   try {
     const client = new GoogleGenerativeAI(env.llm.geminiApiKey);
-    const model = client.getGenerativeModel({ model: "gemini-2.5-pro" });
+    const model = client.getGenerativeModel({ model: modelName });
     const result = await model.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
@@ -65,18 +100,15 @@ export async function geminiInsight(req: InsightRequest): Promise<StrategicInsig
         usageMeta.candidatesTokenCount ?? 0,
       );
     }
-    const parsed = JSON.parse(text) as ParsedInsight;
-
-    const fallback = createFallbackInsight({
-      decision: req.decision,
-      category: req.metrics.category,
-      brand: req.metrics.brand,
-      competitionLevel: req.competitionLevel,
-      summary: req.summary,
-    });
+    let parsed: ParsedInsight;
+    try {
+      parsed = JSON.parse(text) as ParsedInsight;
+    } catch (parseErr) {
+      throw new Error(`JSON parse failed: ${summarizeError(parseErr)} (raw head: ${text.slice(0, 80)})`);
+    }
 
     return {
-      model: "gemini-2.5-pro",
+      model: modelName,
       source: "live",
       promptVersion: REPORT_PROMPT_V,
       report: typeof parsed.report === "string" && parsed.report.length > 0 ? parsed.report : fallback.report,
@@ -86,16 +118,13 @@ export async function geminiInsight(req: InsightRequest): Promise<StrategicInsig
       qaSuggestions: toStringArray(parsed.qaSuggestions, fallback.qaSuggestions),
     };
   } catch (err) {
-    console.warn("[apde] gemini insight failed, falling back", err);
+    const message = summarizeError(err);
+    console.warn("[apde:gemini] insight failed, falling back", { model: modelName, message });
+    recordError(`${modelName}: ${message}`);
     return {
-      ...createFallbackInsight({
-        decision: req.decision,
-        category: req.metrics.category,
-        brand: req.metrics.brand,
-        competitionLevel: req.competitionLevel,
-        summary: req.summary,
-      }),
-      model: "gemini-fallback",
+      ...fallback,
+      // 診断 UI で見えるようにモデル名にエラー要約を含める
+      model: `gemini-fallback (${modelName}: ${message.slice(0, 90)})`,
       source: "hybrid",
     };
   }
