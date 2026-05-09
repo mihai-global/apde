@@ -17,6 +17,18 @@ interface KeepaProductResponse {
     categoryTree?: Array<{ name?: string }>;
     csv?: Array<number[] | null>;
     imagesCSV?: string; // 例: "61abc.jpg,62def.jpg,..."
+    /** Keepa の現在値スナップショット (履歴とは別) */
+    stats?: {
+      current?: number[]; // index 順は csv と同じ。-1 は欠損
+    };
+    /** 商品の重量。 Keepa は 10 倍値 (g x 10) を返す → /10 で g */
+    packageWeight?: number;
+    itemWeight?: number;
+    /** 直近 30 日の販売数 (Keepa が推定可能な場合) */
+    monthlySold?: number;
+    /** 現在のレビュー件数・★★ (Keepa は 10 倍値 = 45 → 4.5) */
+    reviewsCount?: number;
+    rating?: number;
   }>;
 }
 
@@ -74,6 +86,18 @@ export interface KeepaSeries {
   title?: string;
   brand?: string;
   category?: string;
+  /** 商品スペック (履歴ではない現在値スナップショット) */
+  weightGrams?: number;
+  /** 直近 30 日の推定販売数 */
+  monthlySold?: number;
+  /** 現在のレビュー件数 */
+  currentReviewCount?: number;
+  /** 現在の★ (1-5) */
+  currentRating?: number;
+  /** 現在の出品者数 */
+  currentSellerCount?: number;
+  /** 現在価格 (Keepa stats.current[0/1] 由来) */
+  currentPrice?: number;
 }
 
 async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
@@ -143,8 +167,8 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
   if (!env.keepa.configured) {
     throw new Error("Keepa API key not configured");
   }
-  // images=1 で imagesCSV を取得（追加トークンコストは Keepa の "1 product" 内で済む）
-  const url = `${BASE_URL}/product?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&asin=${encodeURIComponent(asin)}&history=1&images=1`;
+  // images=1 で imagesCSV、stats=1 で stats.current のスナップショットを取得 (追加トークン無し)
+  const url = `${BASE_URL}/product?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&asin=${encodeURIComponent(asin)}&history=1&images=1&stats=1`;
   const res = await fetchWithRetry(url);
   if (!res.ok) {
     throw new Error(`Keepa returned ${res.status}`);
@@ -157,6 +181,17 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
   const csv = product.csv ?? [];
   const imageUrls = keepaImagesToUrls(product.imagesCSV);
   const categoryName = product.categoryTree?.[product.categoryTree.length - 1]?.name;
+  const weightDecigrams = product.packageWeight ?? product.itemWeight;
+  const weightGrams = typeof weightDecigrams === "number" && weightDecigrams > 0
+    ? Math.round(weightDecigrams / 10)
+    : undefined;
+  // stats.current は csv と同じ index 順。 -1 は欠損なので除外。
+  const currentArr = product.stats?.current ?? [];
+  const pickCurrent = (idx: number): number | undefined => {
+    const v = currentArr[idx];
+    return typeof v === "number" && v > 0 ? v : undefined;
+  };
+  const currentRating = pickCurrent(ARRAY_INDEX.RATING);
   return {
     price: csvToSeries(csv[ARRAY_INDEX.AMAZON] ?? csv[ARRAY_INDEX.NEW]),
     bsr: csvToSeries(csv[ARRAY_INDEX.SALES_RANK]),
@@ -168,5 +203,12 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
     title: product.title,
     brand: product.brand,
     category: categoryName ?? product.productGroup,
+    weightGrams,
+    monthlySold: typeof product.monthlySold === "number" && product.monthlySold >= 0 ? product.monthlySold : undefined,
+    currentReviewCount:
+      product.reviewsCount ?? pickCurrent(ARRAY_INDEX.COUNT_REVIEWS),
+    currentRating: currentRating !== undefined ? currentRating / 10 : product.rating !== undefined ? product.rating / 10 : undefined,
+    currentSellerCount: pickCurrent(ARRAY_INDEX.COUNT_NEW),
+    currentPrice: pickCurrent(ARRAY_INDEX.AMAZON) ?? pickCurrent(ARRAY_INDEX.NEW),
   };
 }

@@ -184,18 +184,22 @@ export async function upsertProductMaster(input: {
   seller_count?: number;
   image_url?: string | null;
   rating?: number | null;
+  weight_grams?: number;
 }): Promise<void> {
   if (mockMode.supabase) {
     const store = getMockStore();
     const existing = store.products.get(input.asin);
+    const weight = input.weight_grams ?? existing?.weight_grams ?? 0;
+    const inferredTier =
+      weight > 1000 ? "OVERSIZE" : weight <= 500 ? "SMALL_STANDARD" : "LARGE_STANDARD";
     store.products.set(input.asin, {
       asin: input.asin,
       title: input.title ?? existing?.title ?? input.asin,
       category: input.category ?? existing?.category ?? "未分類",
       brand: input.brand ?? existing?.brand ?? "",
       current_price: input.current_price ?? existing?.current_price ?? 0,
-      weight_grams: existing?.weight_grams ?? 0,
-      size_tier: existing?.size_tier ?? "SMALL_STANDARD",
+      weight_grams: weight,
+      size_tier: input.weight_grams ? inferredTier : existing?.size_tier ?? inferredTier,
       review_count: input.review_count ?? existing?.review_count ?? 0,
       seller_count: input.seller_count ?? existing?.seller_count ?? 0,
       brand_strength: existing?.brand_strength ?? 0,
@@ -227,6 +231,15 @@ export async function upsertProductMaster(input: {
   if (input.seller_count !== undefined) payload.seller_count = input.seller_count;
   if (input.image_url !== undefined) payload.image_url = input.image_url;
   if (input.rating !== undefined && input.rating !== null) payload.rating = input.rating;
+  if (input.weight_grams !== undefined && input.weight_grams > 0) {
+    payload.weight_grams = input.weight_grams;
+    payload.size_tier =
+      input.weight_grams > 1000
+        ? "OVERSIZE"
+        : input.weight_grams <= 500
+          ? "SMALL_STANDARD"
+          : "LARGE_STANDARD";
+  }
   const { error } = await supabase
     .from("products")
     .upsert(payload, { onConflict: "asin" });

@@ -134,23 +134,26 @@ async function tryEnrichWithKeepa(
         source: "live",
         updated_at: new Date().toISOString(),
       };
-      // FK 制約があるため、まず products に最低限の行を upsert
+      // FK 制約があるため、まず products に最低限の行を upsert。
+      // current* スナップショットを優先し、無ければ履歴の末尾値を使う。
+      const sellerCount =
+        series.currentSellerCount ?? series.sellers.at(-1)?.value;
+      const reviewCount =
+        series.currentReviewCount ?? series.reviewCount.at(-1)?.value;
+      const rating =
+        series.currentRating ?? (series.rating.at(-1)?.value ? series.rating.at(-1)!.value / 10 : undefined);
+      const currentPrice = series.currentPrice ?? series.price.at(-1)?.value;
       await upsertProductMaster({
         asin: metrics.asin,
         title: titleFromKeepa,
         brand: brandFromKeepa,
         category: categoryFromKeepa,
         image_url: imageUrlFromKeepa ?? null,
-        current_price: series.price.at(-1)?.value,
-        seller_count: series.sellers.at(-1)?.value
-          ? Math.round(series.sellers.at(-1)!.value)
-          : undefined,
-        review_count: series.reviewCount.at(-1)?.value
-          ? Math.round(series.reviewCount.at(-1)!.value)
-          : undefined,
-        rating: series.rating.at(-1)?.value
-          ? series.rating.at(-1)!.value / 10
-          : undefined,
+        current_price: currentPrice,
+        seller_count: typeof sellerCount === "number" ? Math.max(1, Math.round(sellerCount)) : undefined,
+        review_count: typeof reviewCount === "number" ? Math.max(0, Math.round(reviewCount)) : undefined,
+        rating: typeof rating === "number" ? rating : undefined,
+        weight_grams: series.weightGrams,
       });
       await upsertKeepaCache(row);
     } catch (err) {
@@ -183,6 +186,26 @@ async function tryEnrichWithKeepa(
   enriched.averagePrice90d = Math.round(avg);
   const drop = first > 0 ? ((first - last) / first) * 100 : 0;
   enriched.priceDropRate = Math.max(0, Math.round(drop));
+
+  // 直近値で metrics を上書き (履歴ではなく現時点のスナップショット)
+  if (series.currentPrice !== undefined) enriched.currentPrice = Math.round(series.currentPrice);
+  if (series.currentSellerCount !== undefined) {
+    enriched.sellerCount = Math.max(1, Math.round(series.currentSellerCount));
+  }
+  if (series.currentReviewCount !== undefined) {
+    enriched.reviewCount = Math.max(0, Math.round(series.currentReviewCount));
+  } else if (series.reviewCount.length > 0) {
+    enriched.reviewCount = Math.max(0, Math.round(series.reviewCount.at(-1)!.value));
+  }
+  if (series.currentRating !== undefined) enriched.rating = series.currentRating;
+  if (series.weightGrams !== undefined && series.weightGrams > 0) {
+    enriched.weightGrams = series.weightGrams;
+    // 重量に応じて sizeTier も更新 (>1kg は OVERSIZE 扱い)
+    enriched.sizeTier = series.weightGrams > 1000 ? "OVERSIZE" : enriched.weightGrams <= 500 ? "SMALL_STANDARD" : "LARGE_STANDARD";
+  }
+  if (series.monthlySold !== undefined && series.monthlySold > 0) {
+    enriched.estimatedMonthlySales = series.monthlySold;
+  }
 
   if (titleFromKeepa) enriched.title = titleFromKeepa;
   if (brandFromKeepa) enriched.brand = brandFromKeepa;
@@ -390,6 +413,7 @@ export async function discoverProducts(
         review_count: metrics.reviewCount,
         seller_count: metrics.sellerCount,
         rating: metrics.rating ?? null,
+        weight_grams: metrics.weightGrams,
       }).catch((err) => {
         console.warn("[apde] upsertProductMaster failed in discover", {
           asin: metrics.asin,
