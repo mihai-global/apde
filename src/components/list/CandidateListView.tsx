@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { DBadge } from "@/components/primitives/DBadge";
+import { MonthlySalesProvenance } from "@/components/primitives/MonthlySalesProvenance";
 import { ScoreBar } from "@/components/primitives/ScoreBar";
 import { Thumbnail } from "@/components/primitives/Thumbnail";
 import { Chip } from "@/components/primitives/Chip";
@@ -84,6 +85,25 @@ export function CandidateListView({ candidates, excluded }: CandidateListViewPro
           <div className="val num">{excluded.length}<span className="unit">件</span></div>
           <div className="sub">サイズ・規制・辞書による事前除外</div>
         </div>
+      </div>
+
+      <div
+        className="muted"
+        style={{ fontSize: 11, marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap" }}
+      >
+        <span>想定月商の信頼度:</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--decision-go)", display: "inline-block" }} />
+          Keepa 実測
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--decision-cond)", display: "inline-block" }} />
+          BSR 推定 (荒い)
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--fg-4)", display: "inline-block" }} />
+          モック
+        </span>
       </div>
 
       <div className="rowsplit" style={{ marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
@@ -194,7 +214,10 @@ function CandidateRow({ c }: { c: DiscoveryCandidate }) {
         </div>
       </td>
       <td><ScoreBar score={c.score} /></td>
-      <td className="right num">{yen(c.monthlyRevenueEstimate)}</td>
+      <td className="right num">
+        {yen(c.monthlyRevenueEstimate)}
+        <MonthlySalesProvenance source={c.monthlySalesSource} compact />
+      </td>
       <td className="right num" style={{ color: c.grossMarginRate < 30 ? "var(--danger)" : "inherit" }}>
         {c.grossMarginRate}%
       </td>
@@ -224,7 +247,13 @@ function CandidateCard({ c }: { c: DiscoveryCandidate }) {
             {c.grossMarginRate}%
           </dd>
         </div>
-        <div><dt>想定月商</dt><dd className="num">{yen(c.monthlyRevenueEstimate)}</dd></div>
+        <div>
+          <dt>想定月商</dt>
+          <dd className="num">
+            {yen(c.monthlyRevenueEstimate)}
+            <MonthlySalesProvenance source={c.monthlySalesSource} compact />
+          </dd>
+        </div>
         <div><dt>レビュー</dt><dd className="num">{fmtNum(c.reviewCount)}</dd></div>
       </dl>
       <div style={{ marginTop: 16, fontSize: 12, color: "var(--fg-3)", borderTop: "1px solid var(--border-1)", paddingTop: 12 }}>

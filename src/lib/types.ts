@@ -37,6 +37,10 @@ export interface KeepaDerivedMetrics {
   priceDropRate90d: number; // 90日下落率 (%) — マイナスは下落
 }
 
+/** estimatedMonthlySales の出所。 keepa = Keepa monthlySold (実測)、
+ * bsr = BSR ベースの粗い推定、seed = mock 乱数 (Keepa 未呼び出し or 失敗) */
+export type MonthlySalesSource = "keepa" | "bsr" | "seed";
+
 export interface AsinMetrics extends ProductHistory {
   asin: string;
   title: string;
@@ -55,6 +59,7 @@ export interface AsinMetrics extends ProductHistory {
   reviewCount: number;
   brandStrength: number;
   estimatedMonthlySales: number;
+  monthlySalesSource?: MonthlySalesSource;
   weightGrams: number;
   sizeTier: SizeTier;
   grossMarginRate: number;
@@ -192,6 +197,7 @@ export interface DiscoveryCandidate {
   score: number;
   decision: Decision;
   monthlyRevenueEstimate: number;
+  monthlySalesSource?: MonthlySalesSource;
   competitionLevel: CompetitionLevel;
   summary: string;
   reasons: string[];

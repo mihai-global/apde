@@ -205,9 +205,9 @@ async function tryEnrichWithKeepa(
   }
   if (series.monthlySold !== undefined && series.monthlySold > 0) {
     enriched.estimatedMonthlySales = series.monthlySold;
+    enriched.monthlySalesSource = "keepa";
   } else if (series.bsr.length > 0) {
     // Keepa が monthlySold を提供しない場合は BSR ベースの粗い推定にフォールバック。
-    // 完全に正しくはないが seed 乱数よりは妥当。
     const latestBsr = series.bsr.at(-1)!.value;
     let estimated = 10;
     if (latestBsr < 100) estimated = 1500;
@@ -216,6 +216,10 @@ async function tryEnrichWithKeepa(
     else if (latestBsr < 20000) estimated = 80;
     else if (latestBsr < 100000) estimated = 30;
     enriched.estimatedMonthlySales = estimated;
+    enriched.monthlySalesSource = "bsr";
+  } else {
+    // Keepa からも BSR 履歴も取れない場合 (新商品 / Keepa 失敗) は seed 乱数のまま
+    enriched.monthlySalesSource = "seed";
   }
 
   if (titleFromKeepa) enriched.title = titleFromKeepa;
@@ -282,6 +286,7 @@ function toCandidate(result: AnalysisResult): DiscoveryCandidate {
     score: result.score,
     decision: result.decision,
     monthlyRevenueEstimate: result.monthlyRevenueEstimate,
+    monthlySalesSource: result.metrics.monthlySalesSource,
     competitionLevel: result.competitionLevel,
     summary: result.summary,
     reasons: result.reasons,

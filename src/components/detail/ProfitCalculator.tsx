@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { MonthlySalesProvenance } from "@/components/primitives/MonthlySalesProvenance";
 import { yen } from "@/lib/format";
 import { computeProfit, PROFIT_DEFAULTS } from "@/lib/profit";
 import type { AsinMetrics, ProfitBreakdown } from "@/lib/types";
@@ -89,9 +90,12 @@ export function ProfitCalculator({ metrics, initial }: ProfitCalculatorProps) {
               />
             </div>
           </div>
-          <div className="muted" style={{ fontSize: 12, marginTop: 12 }}>
-            月想定 {metrics.estimatedMonthlySales.toLocaleString("ja-JP")} 個 →
-            月利 <strong style={{ color: "var(--fg-1)" }}>{yen(profit.netProfitMonthly)}</strong>
+          <div className="muted" style={{ fontSize: 12, marginTop: 12, display: "flex", alignItems: "center", flexWrap: "wrap" }}>
+            <span>月想定 {metrics.estimatedMonthlySales.toLocaleString("ja-JP")} 個</span>
+            <MonthlySalesProvenance source={metrics.monthlySalesSource} />
+            <span style={{ marginLeft: 4 }}>
+              → 月利 <strong style={{ color: "var(--fg-1)" }}>{yen(profit.netProfitMonthly)}</strong>
+            </span>
           </div>
         </div>
       </div>
