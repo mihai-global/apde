@@ -12,6 +12,10 @@ import {
 import { listDiscoveryRuns, listMarketAnalysis } from "@/lib/supabase/repositories";
 
 export const dynamic = "force-dynamic";
+// runIngestDiscover server action が /search に POST されるため、
+// ここの maxDuration がアクション実行時間の上限になる。
+// Vercel Hobby の上限は 60s。 100 件並列 ingest で ~10-15s 掛かる想定。
+export const maxDuration = 60;
 
 interface SearchPageProps {
   searchParams: Promise<{

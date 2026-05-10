@@ -9,6 +9,9 @@ import { ingestDiscover, type IngestDiscoverInput } from "@/lib/keepa/ingest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// 100 件 ingest で /query → bulk /product → 100 ASIN の DB 書き込みが走るので
+// Vercel Hobby (60s 上限) いっぱいを確保しておく。
+export const maxDuration = 60;
 
 export async function POST(request: Request): Promise<Response> {
   if (!env.cronSecret) {

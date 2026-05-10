@@ -212,36 +212,46 @@ export async function ingestDiscover(
   });
 
   const ts = nowIso();
-  const asins: string[] = [];
+  const validProducts = merged.filter((p) => !!p.asin);
+  const asins = validProducts.map((p) => p.asin);
 
-  // 直列ループ: 各 ASIN ごとに products → snapshot → market_analysis を順に書く
-  // (FK 制約のため products が先)
-  for (const p of merged) {
-    if (!p.asin) continue;
-    asins.push(p.asin);
+  // バッチ並列化: 1 ASIN 内は (FK 制約のため) products → snapshot → market を直列。
+  // ASIN 同士は Promise.all で並列。 BATCH 件ずつ処理し、
+  // Supabase の同時接続枯渇を避ける。
+  const BATCH = 10;
+  for (let i = 0; i < validProducts.length; i += BATCH) {
+    const slice = validProducts.slice(i, i + BATCH);
+    await Promise.all(
+      slice.map(async (p) => {
+        try {
+          await upsertProductMaster({
+            asin: p.asin,
+            title: p.title,
+            brand: p.brand,
+            category: p.category ?? appCategory.label,
+            image_url: p.imageUrl ?? null,
+            current_price: p.currentPrice,
+            review_count: p.currentReviewCount,
+            seller_count: p.currentSellerCount,
+            rating: p.currentRating ?? null,
+            weight_grams: p.weightGrams,
+          });
 
-    await upsertProductMaster({
-      asin: p.asin,
-      title: p.title,
-      brand: p.brand,
-      category: p.category ?? appCategory.label,
-      image_url: p.imageUrl ?? null,
-      current_price: p.currentPrice,
-      review_count: p.currentReviewCount,
-      seller_count: p.currentSellerCount,
-      rating: p.currentRating ?? null,
-      weight_grams: p.weightGrams,
-    });
+          await upsertKeepaSnapshot(snapshotFromKeepaProduct(p));
+          await updateProductRefreshMeta({ asin: p.asin, diffAt: ts });
+          await syncTierFromWatchlist(p.asin);
 
-    await upsertKeepaSnapshot(snapshotFromKeepaProduct(p));
-    await updateProductRefreshMeta({ asin: p.asin, diffAt: ts });
-    // Tier を watchlist から派生
-    await syncTierFromWatchlist(p.asin);
-
-    // market_analysis の計算 (skipLlm の Discovery と同じロジック)
-    const metrics = keepaProductToMetrics(p, appCategory.label);
-    const source: MonthlySalesSource = metrics.monthlySalesSource ?? "seed";
-    await computeAndPersistMarket(p.asin, metrics, source);
+          const metrics = keepaProductToMetrics(p, appCategory.label);
+          const source: MonthlySalesSource = metrics.monthlySalesSource ?? "seed";
+          await computeAndPersistMarket(p.asin, metrics, source);
+        } catch (err) {
+          console.warn("[apde:ingest:discover] per-asin failed", {
+            asin: p.asin,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }),
+    );
   }
 
   return { ingested: asins.length, asins, durationMs: Date.now() - start };
