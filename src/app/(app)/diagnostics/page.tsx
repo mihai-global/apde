@@ -78,6 +78,31 @@ export default async function DiagnosticsPage() {
   const recentKeepaCache = await getCachedKeepa("B0CXM7K2PQ");
   const lastGeminiError = getLastGeminiError();
 
+  // Keepa トークン残高取得 (/token は 1 トークン消費しない情報専用エンドポイント)
+  let keepaTokenStatus: {
+    tokensLeft?: number;
+    refillRate?: number;
+    refillIn?: number;
+  } | null = null;
+  if (env.keepa.configured) {
+    try {
+      const res = await fetch(
+        `https://api.keepa.com/token?key=${encodeURIComponent(env.keepa.apiKey)}`,
+        { cache: "no-store" },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as {
+          tokensLeft?: number;
+          refillRate?: number;
+          refillIn?: number;
+        };
+        keepaTokenStatus = data;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   return (
     <main className="page">
       <div className="shell">
@@ -86,6 +111,64 @@ export default async function DiagnosticsPage() {
         <p className="muted" style={{ marginTop: 12, fontSize: 14, marginBottom: 32 }}>
           API キーが Vercel に届いているか、Keepa / Gemini が実呼び出しできているかを一覧する管理ページ。
         </p>
+
+        {/* ── Keepa トークン状態 ── */}
+        {keepaTokenStatus !== null ? (
+          <section style={{ marginBottom: 32 }}>
+            <div className="eyebrow" style={{ marginBottom: 12 }}>Keepa トークン状態</div>
+            <div
+              style={{
+                padding: 16,
+                border: `1px solid ${
+                  (keepaTokenStatus.tokensLeft ?? 0) < 0
+                    ? "var(--decision-no)"
+                    : (keepaTokenStatus.tokensLeft ?? 0) < 30
+                      ? "var(--decision-cond)"
+                      : "var(--decision-go)"
+                }`,
+                background:
+                  (keepaTokenStatus.tokensLeft ?? 0) < 0
+                    ? "var(--decision-no-bg)"
+                    : (keepaTokenStatus.tokensLeft ?? 0) < 30
+                      ? "var(--decision-cond-bg)"
+                      : "var(--decision-go-bg)",
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 24,
+              }}
+            >
+              <div>
+                <div className="eyebrow" style={{ fontSize: 10 }}>残トークン</div>
+                <div style={{ fontSize: 32, fontWeight: 600, fontFeatureSettings: '"tnum" 1' }}>
+                  {keepaTokenStatus.tokensLeft ?? "—"}
+                </div>
+              </div>
+              <div>
+                <div className="eyebrow" style={{ fontSize: 10 }}>補充レート</div>
+                <div style={{ fontSize: 18, fontFeatureSettings: '"tnum" 1' }}>
+                  {keepaTokenStatus.refillRate ?? "—"} <span className="muted" style={{ fontSize: 12 }}>tokens / 分</span>
+                </div>
+              </div>
+              <div>
+                <div className="eyebrow" style={{ fontSize: 10 }}>次回補充まで</div>
+                <div style={{ fontSize: 18, fontFeatureSettings: '"tnum" 1' }}>
+                  {keepaTokenStatus.refillIn !== undefined
+                    ? `${Math.ceil(keepaTokenStatus.refillIn / 1000)}秒`
+                    : "—"}
+                </div>
+              </div>
+            </div>
+            {(keepaTokenStatus.tokensLeft ?? 0) < 30 ? (
+              <div className="muted" style={{ fontSize: 12, marginTop: 12, lineHeight: 1.7 }}>
+                {(keepaTokenStatus.tokensLeft ?? 0) < 0
+                  ? "⚠ トークン残高が負です。 Keepa が rate-limit を返すため探索は mock fallback に落ちます。"
+                  : "⚠ トークン残高が少なめです。 大規模な探索を回す前に補充を待つことを推奨。"}
+                {" 補充レート ≈ 1 token/分 (free-tier) なので、 -10 トークンの状態で +30 まで回復するには ~40 分。"}
+                {" 必要なら Keepa の上位プランを検討。"}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         {/* ── env フラグ ── */}
         <section style={{ marginBottom: 56 }}>
