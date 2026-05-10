@@ -3,8 +3,10 @@
 import { mockMode } from "@/lib/env";
 import { evaluateGates, decisionFromScore, downgradeByGates } from "@/lib/gates";
 import {
+  fetchKeepaProductsBatch,
   fetchKeepaSeries,
   findProductsByCategory,
+  type KeepaProduct,
   type KeepaSeries,
 } from "@/lib/keepa/client";
 import { findCategory, DEFAULT_CATEGORY } from "@/lib/keepa/categories";
@@ -47,7 +49,20 @@ function summarizeDecision(decision: AnalysisResult["decision"]): string {
   }
 }
 
-function pickConcern(metrics: AsinMetrics, reasons: string[], risks: string[]): string {
+function pickConcern(
+  metrics: AsinMetrics,
+  reasons: string[],
+  risks: string[],
+  gates?: AnalysisResult["gates"],
+): string {
+  // 強制ゲート発動が最優先 (高スコアでも NO-GO の理由はここから来る)
+  if (gates) {
+    const failedNoGo = gates.find((g) => !g.pass && g.severity === "NO_GO");
+    if (failedNoGo) return `${failedNoGo.name}: ${failedNoGo.observed} (基準 ${failedNoGo.threshold})`;
+    const failedConditional = gates.find((g) => !g.pass && g.severity === "CONDITIONAL_CAP");
+    if (failedConditional)
+      return `${failedConditional.name}: ${failedConditional.observed} (基準 ${failedConditional.threshold})`;
+  }
   if (risks.length > 0) return risks[0]!.replace(/^[^:]+:\s*/, "");
   if (reasons.length > 0) return reasons[0]!;
   return `重量 ${metrics.weightGrams}g / レビュー ${metrics.reviewCount} 件で要追跡`;
@@ -312,7 +327,7 @@ function toCandidate(result: AnalysisResult): DiscoveryCandidate {
     brandStrength: result.metrics.brandStrength,
     rating: result.metrics.rating,
     imageUrl: result.metrics.imageUrl,
-    concern: pickConcern(result.metrics, result.reasons, result.risks),
+    concern: pickConcern(result.metrics, result.reasons, result.risks, result.gates),
   };
 }
 
@@ -359,9 +374,43 @@ export async function discoverProducts(
         category: appCategory.label,
         keyword: keyword || null,
         productsCount: products.length,
+        productsWithTitle: products.filter((p) => !!p.title).length,
       });
       if (products.length > 0) {
-        collected = products.map((p) => keepaProductToMetrics(p, appCategory.label));
+        // /query は ASIN リストのみ返すパターンが多く、 title/brand/image が空のことが多い。
+        // 空の ASIN を /product (history=0, バルク) で enrich して候補リストに使う。
+        const needsEnrichment = products.filter((p) => !p.title || !p.imageUrl).map((p) => p.asin);
+        let enrichedMap: Map<string, KeepaProduct> = new Map();
+        if (needsEnrichment.length > 0) {
+          try {
+            const enriched = await fetchKeepaProductsBatch(needsEnrichment);
+            enrichedMap = new Map(enriched.map((p) => [p.asin, p]));
+          } catch (err) {
+            console.warn("[apde:discover] bulk product enrich failed", {
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        const merged: KeepaProduct[] = products.map((p) => {
+          const more = enrichedMap.get(p.asin);
+          if (!more) return p;
+          return {
+            ...p,
+            title: p.title ?? more.title,
+            brand: p.brand ?? more.brand,
+            imageUrl: p.imageUrl ?? more.imageUrl,
+            category: p.category ?? more.category,
+            weightGrams: p.weightGrams ?? more.weightGrams,
+            currentPrice: p.currentPrice ?? more.currentPrice,
+            currentSellerCount: p.currentSellerCount ?? more.currentSellerCount,
+            currentReviewCount: p.currentReviewCount ?? more.currentReviewCount,
+            currentRating: p.currentRating ?? more.currentRating,
+            currentBsr: p.currentBsr ?? more.currentBsr,
+            monthlySold: p.monthlySold ?? more.monthlySold,
+            isHazmat: p.isHazmat ?? more.isHazmat,
+          };
+        });
+        collected = merged.map((p) => keepaProductToMetrics(p, appCategory.label));
         liveAsinSet = new Set(collected.map((m) => m.asin));
       } else {
         console.warn("[apde:discover] /query returned 0 products, falling back to mock");

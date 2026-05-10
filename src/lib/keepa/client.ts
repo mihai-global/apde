@@ -29,6 +29,7 @@ interface KeepaProductResponse {
     /** 現在のレビュー件数・★★ (Keepa は 10 倍値 = 45 → 4.5) */
     reviewsCount?: number;
     rating?: number;
+    isHazmat?: boolean;
   }>;
 }
 
@@ -385,6 +386,76 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
   }
 
   return collected.slice(0, targetLimit);
+}
+
+/**
+ * 複数 ASIN を 1 リクエストでまとめて取得する軽量バッチ。 history=0 で履歴を持たず、
+ * stats.current のみ返るので Discovery 段階で十分。 1 ASIN ≈ 1 トークン (history なし)。
+ */
+export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaProduct[]> {
+  if (!env.keepa.configured) throw new Error("Keepa API key not configured");
+  if (asins.length === 0) return [];
+  // Keepa /product は最大 100 ASIN まで csv-list で受ける
+  const chunks: string[][] = [];
+  for (let i = 0; i < asins.length; i += 100) chunks.push(asins.slice(i, i + 100));
+  const out: KeepaProduct[] = [];
+
+  for (const chunk of chunks) {
+    const url =
+      `${BASE_URL}/product?key=${encodeURIComponent(env.keepa.apiKey)}` +
+      `&domain=${env.keepa.domain}` +
+      `&asin=${encodeURIComponent(chunk.join(","))}` +
+      `&history=0&stats=1&images=1`;
+    const start = Date.now();
+    const res = await fetchWithRetry(url);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn("[apde:keepa:bulk-product] failed", { status: res.status, body: body.slice(0, 200) });
+      continue;
+    }
+    const data: KeepaProductResponse = await res.json();
+    void usage.keepa("/product (bulk)", data.tokensConsumed ?? chunk.length);
+    const products = data.products ?? [];
+    console.info("[apde:keepa:bulk-product]", {
+      requested: chunk.length,
+      returned: products.length,
+      tokensConsumed: data.tokensConsumed,
+      durationMs: Date.now() - start,
+    });
+    for (const p of products) {
+      if (typeof p.asin !== "string" || p.asin.length === 0) continue;
+      const currentArr = p.stats?.current ?? [];
+      const pickCurrent = (idx: number): number | undefined => {
+        const v = currentArr[idx];
+        return typeof v === "number" && v > 0 ? v : undefined;
+      };
+      const weightDecigrams = p.packageWeight ?? p.itemWeight;
+      const weightGrams =
+        typeof weightDecigrams === "number" && weightDecigrams > 0
+          ? Math.round(weightDecigrams / 10)
+          : undefined;
+      const categoryName = p.categoryTree?.[p.categoryTree.length - 1]?.name;
+      const ratingRaw = pickCurrent(ARRAY_INDEX.RATING);
+      out.push({
+        asin: p.asin,
+        title: p.title,
+        brand: p.brand,
+        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+        category: categoryName ?? p.productGroup,
+        weightGrams,
+        monthlySold:
+          typeof p.monthlySold === "number" && p.monthlySold >= 0 ? p.monthlySold : undefined,
+        currentPrice:
+          pickCurrent(ARRAY_INDEX.AMAZON) ?? pickCurrent(ARRAY_INDEX.NEW),
+        currentSellerCount: pickCurrent(ARRAY_INDEX.COUNT_NEW),
+        currentReviewCount: pickCurrent(ARRAY_INDEX.COUNT_REVIEWS),
+        currentRating: ratingRaw !== undefined ? ratingRaw / 10 : undefined,
+        currentBsr: pickCurrent(ARRAY_INDEX.SALES_RANK),
+        isHazmat: p.isHazmat,
+      });
+    }
+  }
+  return out;
 }
 
 export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
