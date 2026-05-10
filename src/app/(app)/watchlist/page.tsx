@@ -1,16 +1,25 @@
 import { WatchlistManagementList, type ManagedWatchlistRow } from "@/components/watchlist/WatchlistManagementList";
 import { Crumbs } from "@/components/shell/Crumbs";
-import { listProductSummaries, listWatchlist } from "@/lib/supabase/repositories";
+import {
+  getProductRefreshMeta,
+  listProductSummaries,
+  listWatchlist,
+} from "@/lib/supabase/repositories";
 
 export const dynamic = "force-dynamic";
 
 export default async function WatchlistPage() {
   const watchlist = await listWatchlist();
-  const productMap = new Map(
-    (await listProductSummaries(watchlist.map((w) => w.asin))).map((p) => [p.asin, p]),
-  );
+  const asins = watchlist.map((w) => w.asin);
+  const [products, refreshMetas] = await Promise.all([
+    listProductSummaries(asins),
+    Promise.all(asins.map((asin) => getProductRefreshMeta(asin))),
+  ]);
+  const productMap = new Map(products.map((p) => [p.asin, p]));
+  const refreshMap = new Map(asins.map((asin, i) => [asin, refreshMetas[i] ?? null]));
   const rows: ManagedWatchlistRow[] = watchlist.map((w) => {
     const p = productMap.get(w.asin);
+    const meta = refreshMap.get(w.asin);
     return {
       asin: w.asin,
       title: p?.title ?? w.asin,
@@ -20,6 +29,7 @@ export default async function WatchlistPage() {
       score: p?.score ?? 0,
       seed: p?.seed ?? 1,
       imageUrl: p?.imageUrl,
+      lastDiffAt: meta?.keepa_last_diff_at ?? null,
     };
   });
 

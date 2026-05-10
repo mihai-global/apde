@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { ingestDiff, ingestFull } from "@/lib/keepa/ingest";
 import { generateInsight } from "@/lib/llm";
 import {
   appendThread,
@@ -34,4 +35,39 @@ export async function addToWatchlist(asin: string, status: WatchlistStatus = "ca
   revalidatePath(`/products/${asin}`);
   revalidatePath("/watchlist");
   revalidatePath("/");
+}
+
+export interface IngestActionResult {
+  ok: boolean;
+  error?: string;
+  pricePoints?: number;
+  bsrPoints?: number;
+  sellerPoints?: number;
+}
+
+/** R5: 詳細ページ「履歴を更新」ボタン → /product?history=1 (1 token) */
+export async function runIngestFull(asin: string): Promise<IngestActionResult> {
+  try {
+    const r = await ingestFull(asin);
+    revalidatePath(`/products/${asin}`);
+    return {
+      ok: true,
+      pricePoints: r.pricePoints,
+      bsrPoints: r.bsrPoints,
+      sellerPoints: r.sellerPoints,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** R5: 詳細ページ「最新値を取得」ボタン → /product?history=0 (1 token) */
+export async function runIngestDiff(asin: string): Promise<IngestActionResult> {
+  try {
+    await ingestDiff(asin);
+    revalidatePath(`/products/${asin}`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }

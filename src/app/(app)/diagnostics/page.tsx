@@ -7,10 +7,12 @@ import Link from "next/link";
 import { ProbeForm } from "@/components/diagnostics/ProbeForm";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { env, mockMode } from "@/lib/env";
-import { yen } from "@/lib/format";
+import { fmtNum, yen } from "@/lib/format";
 import { getLastGeminiError } from "@/lib/llm/gemini";
 import {
   getCachedKeepa,
+  getRefreshQueueCounts,
+  getStorageCounts,
   listApiUsageThisMonth,
 } from "@/lib/supabase/repositories";
 import { getServiceRoleSupabase } from "@/lib/supabase/server";
@@ -55,9 +57,11 @@ function StatusDot({ ok }: { ok: boolean }) {
 }
 
 export default async function DiagnosticsPage() {
-  const [usage, sourceCounts] = await Promise.all([
+  const [usage, sourceCounts, refreshQueue, storage] = await Promise.all([
     listApiUsageThisMonth(),
     getAnalysisSourceCounts(),
+    getRefreshQueueCounts(),
+    getStorageCounts(),
   ]);
 
   const usageByProvider = new Map<string, { count: number; cost: number; lastAt: string }>();
@@ -290,6 +294,91 @@ export default async function DiagnosticsPage() {
             キャッシュを使わず常に実呼び出しします (トークン消費あり)。
           </p>
           <ProbeForm />
+        </section>
+
+        {/* ── R5: Refresh queue (Tier 別) ── */}
+        <section style={{ marginBottom: 56 }}>
+          <div className="eyebrow" style={{ marginBottom: 16 }}>Refresh queue (Cron Tier 別)</div>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 16, lineHeight: 1.7 }}>
+            /api/cron/refresh が hourly に処理する候補。 Tier 1 = sourcing/live (24h)、 Tier 2 = candidate (7d)、 Tier 3 はオンデマンドのみ。
+            Pending = 規定時間を超えて未取得の ASIN 数。
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
+            <div className="kpi go">
+              <div className="label">Tier 1</div>
+              <div className="val num">
+                {refreshQueue.tier1Pending}
+                <span className="unit"> / {refreshQueue.tier1Total}</span>
+              </div>
+              <div className="sub">
+                pending / total · 24h refresh
+              </div>
+            </div>
+            <div className="kpi cond">
+              <div className="label">Tier 2</div>
+              <div className="val num">
+                {refreshQueue.tier2Pending}
+                <span className="unit"> / {refreshQueue.tier2Total}</span>
+              </div>
+              <div className="sub">
+                pending / total · 7d refresh
+              </div>
+            </div>
+            <div className="kpi">
+              <div className="label">Tier 3</div>
+              <div className="val num">
+                {refreshQueue.tier3Total}
+                <span className="unit">件</span>
+              </div>
+              <div className="sub">オンデマンドのみ (cron 対象外)</div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── R5: Storage 集計 ── */}
+        <section style={{ marginBottom: 56 }}>
+          <div className="eyebrow" style={{ marginBottom: 16 }}>ストレージ使用量 (Supabase row 数)</div>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>テーブル</th>
+                <th className="right">行数</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>products</strong></td>
+                <td className="right num">{fmtNum(storage.products)}</td>
+                <td className="muted">ASIN マスタ + tier / refresh タイムスタンプ</td>
+              </tr>
+              <tr>
+                <td><strong>keepa_snapshot</strong></td>
+                <td className="right num">{fmtNum(storage.keepaSnapshot)}</td>
+                <td className="muted">最新 price / BSR / sellers / reviews / monthly_sold</td>
+              </tr>
+              <tr>
+                <td><strong>market_analysis</strong></td>
+                <td className="right num">{fmtNum(storage.marketAnalysis)}</td>
+                <td className="muted">5 軸 + ゲート + market_score</td>
+              </tr>
+              <tr>
+                <td>price_history</td>
+                <td className="right num">{fmtNum(storage.priceHistory)}</td>
+                <td className="muted">価格時系列 (ingestFull で書き込み)</td>
+              </tr>
+              <tr>
+                <td>bsr_history</td>
+                <td className="right num">{fmtNum(storage.bsrHistory)}</td>
+                <td className="muted">BSR 時系列</td>
+              </tr>
+              <tr>
+                <td>seller_history</td>
+                <td className="right num">{fmtNum(storage.sellerHistory)}</td>
+                <td className="muted">出品者数時系列</td>
+              </tr>
+            </tbody>
+          </table>
         </section>
 
         {/* ── API 利用履歴 ── */}

@@ -3,6 +3,7 @@ import { AsideDecisionCard } from "@/components/detail/AsideDecisionCard";
 import { DecisionPanel } from "@/components/detail/DecisionPanel";
 import { GateView } from "@/components/detail/GateView";
 import { HistoryTable } from "@/components/detail/HistoryTable";
+import { KeepaSyncPanel } from "@/components/detail/KeepaSyncPanel";
 import { LlmReportTabs } from "@/components/detail/LlmReportTabs";
 import { MarketCharts } from "@/components/detail/MarketCharts";
 import { MemoEditor } from "@/components/detail/MemoEditor";
@@ -14,8 +15,11 @@ import { Crumbs } from "@/components/shell/Crumbs";
 import { fmtNum } from "@/lib/format";
 import { analyzeProduct } from "@/lib/integrations";
 import {
+  getProductRefreshMeta,
   getProductSummary,
   listAnalysisHistory,
+  listBsrHistory,
+  listPriceHistory,
   listThreads,
   listWatchlist,
 } from "@/lib/supabase/repositories";
@@ -34,11 +38,14 @@ export default async function ProductDetailPage({
   params: Promise<{ asin: string }>;
 }) {
   const { asin } = await params;
-  const [product, history, threads, watchlist] = await Promise.all([
+  const [product, history, threads, watchlist, refreshMeta, priceHistory, bsrHistory] = await Promise.all([
     getProductSummary(asin),
     listAnalysisHistory(asin, 5),
     listThreads(asin),
     listWatchlist(),
+    getProductRefreshMeta(asin),
+    listPriceHistory(asin, "new", 200),
+    listBsrHistory(asin, 200),
   ]);
 
   // products テーブルから取得した実データ (Keepa enrichment 済) を override として渡す。
@@ -138,6 +145,14 @@ export default async function ProductDetailPage({
         <div className="detail-grid">
           <div>
             <DecisionPanel analysis={analysis} />
+            <KeepaSyncPanel
+              asin={asin}
+              tier={refreshMeta?.tier ?? 3}
+              lastFullAt={refreshMeta?.keepa_last_full_at ?? null}
+              lastDiffAt={refreshMeta?.keepa_last_diff_at ?? null}
+              priceHistory={priceHistory.map((p) => ({ ts: p.ts, price_yen: p.price_yen }))}
+              bsrHistory={bsrHistory.map((b) => ({ ts: b.ts, rank: b.rank }))}
+            />
             <ScoreBreakdownSection breakdown={analysis.breakdown} total={analysis.score} />
             <GateView gates={analysis.gates} />
             <MarketCharts metrics={analysis.metrics} derived={analysis.derived} />

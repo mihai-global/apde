@@ -1031,6 +1031,229 @@ export async function syncTierFromWatchlist(asin: string): Promise<Tier> {
   return tier;
 }
 
+// ─── R5: history readers (詳細ページ用) ─────────────────────────────
+
+export async function listPriceHistory(
+  asin: string,
+  priceType: PriceType = "new",
+  limit = 200,
+): Promise<PriceHistoryRow[]> {
+  if (mockMode.supabase) {
+    return getMockStore()
+      .priceHistory.filter((r) => r.asin === asin && r.price_type === priceType)
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+      .slice(-limit);
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("price_history")
+    .select("*")
+    .eq("asin", asin)
+    .eq("price_type", priceType)
+    .order("ts", { ascending: true })
+    .limit(limit);
+  if (error) {
+    console.warn("[apde] listPriceHistory failed", error);
+    return [];
+  }
+  return (data ?? []) as PriceHistoryRow[];
+}
+
+export async function listBsrHistory(asin: string, limit = 200): Promise<BsrHistoryRow[]> {
+  if (mockMode.supabase) {
+    return getMockStore()
+      .bsrHistory.filter((r) => r.asin === asin)
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+      .slice(-limit);
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("bsr_history")
+    .select("*")
+    .eq("asin", asin)
+    .order("ts", { ascending: true })
+    .limit(limit);
+  if (error) {
+    console.warn("[apde] listBsrHistory failed", error);
+    return [];
+  }
+  return (data ?? []) as BsrHistoryRow[];
+}
+
+export async function listSellerHistory(asin: string, limit = 200): Promise<SellerHistoryRow[]> {
+  if (mockMode.supabase) {
+    return getMockStore()
+      .sellerHistory.filter((r) => r.asin === asin)
+      .sort((a, b) => a.ts.localeCompare(b.ts))
+      .slice(-limit);
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from("seller_history")
+    .select("*")
+    .eq("asin", asin)
+    .order("ts", { ascending: true })
+    .limit(limit);
+  if (error) {
+    console.warn("[apde] listSellerHistory failed", error);
+    return [];
+  }
+  return (data ?? []) as SellerHistoryRow[];
+}
+
+/** 詳細ページで products テーブルの refresh タイムスタンプ + tier を読む */
+export async function getProductRefreshMeta(asin: string): Promise<{
+  tier: Tier;
+  keepa_last_full_at: string | null;
+  keepa_last_diff_at: string | null;
+} | null> {
+  if (mockMode.supabase) {
+    const meta = getMockStore().productMeta.get(asin);
+    if (!meta) return null;
+    return {
+      tier: meta.tier as Tier,
+      keepa_last_full_at: meta.keepa_last_full_at,
+      keepa_last_diff_at: meta.keepa_last_diff_at,
+    };
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("products")
+    .select("tier,keepa_last_full_at,keepa_last_diff_at")
+    .eq("asin", asin)
+    .maybeSingle();
+  if (error) {
+    console.warn("[apde] getProductRefreshMeta failed", error);
+    return null;
+  }
+  if (!data) return null;
+  const row = data as { tier?: number; keepa_last_full_at: string | null; keepa_last_diff_at: string | null };
+  const tier = (row.tier === 1 || row.tier === 2 ? row.tier : 3) as Tier;
+  return {
+    tier,
+    keepa_last_full_at: row.keepa_last_full_at,
+    keepa_last_diff_at: row.keepa_last_diff_at,
+  };
+}
+
+// ─── R5: diagnostics 用集計 ──────────────────────────────────────────
+
+export interface RefreshQueueCounts {
+  /** Tier 別の総 ASIN 数 */
+  tier1Total: number;
+  tier2Total: number;
+  tier3Total: number;
+  /** 24h 経過 (Tier 1) と 7d 経過 (Tier 2) の queue 件数 */
+  tier1Pending: number;
+  tier2Pending: number;
+}
+
+export async function getRefreshQueueCounts(): Promise<RefreshQueueCounts> {
+  const now = Date.now();
+  const tier1Cutoff = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+  const tier2Cutoff = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    let t1 = 0, t2 = 0, t3 = 0, p1 = 0, p2 = 0;
+    for (const meta of store.productMeta.values()) {
+      const lastDiff = meta.keepa_last_diff_at;
+      if (meta.tier === 1) {
+        t1 += 1;
+        if (lastDiff === null || lastDiff < tier1Cutoff) p1 += 1;
+      } else if (meta.tier === 2) {
+        t2 += 1;
+        if (lastDiff === null || lastDiff < tier2Cutoff) p2 += 1;
+      } else {
+        t3 += 1;
+      }
+    }
+    return { tier1Total: t1, tier2Total: t2, tier3Total: t3, tier1Pending: p1, tier2Pending: p2 };
+  }
+
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) {
+    return { tier1Total: 0, tier2Total: 0, tier3Total: 0, tier1Pending: 0, tier2Pending: 0 };
+  }
+  // 5 つの head-only count を 1 round で
+  const [t1, t2, t3, p1, p2] = await Promise.all([
+    supabase.from("products").select("asin", { count: "exact", head: true }).eq("tier", 1),
+    supabase.from("products").select("asin", { count: "exact", head: true }).eq("tier", 2),
+    supabase.from("products").select("asin", { count: "exact", head: true }).eq("tier", 3),
+    supabase
+      .from("products")
+      .select("asin", { count: "exact", head: true })
+      .eq("tier", 1)
+      .or(`keepa_last_diff_at.is.null,keepa_last_diff_at.lt.${tier1Cutoff}`),
+    supabase
+      .from("products")
+      .select("asin", { count: "exact", head: true })
+      .eq("tier", 2)
+      .or(`keepa_last_diff_at.is.null,keepa_last_diff_at.lt.${tier2Cutoff}`),
+  ]);
+  return {
+    tier1Total: t1.count ?? 0,
+    tier2Total: t2.count ?? 0,
+    tier3Total: t3.count ?? 0,
+    tier1Pending: p1.count ?? 0,
+    tier2Pending: p2.count ?? 0,
+  };
+}
+
+export interface StorageCounts {
+  products: number;
+  keepaSnapshot: number;
+  marketAnalysis: number;
+  priceHistory: number;
+  bsrHistory: number;
+  sellerHistory: number;
+}
+
+export async function getStorageCounts(): Promise<StorageCounts> {
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    return {
+      products: store.products.size,
+      keepaSnapshot: store.keepaSnapshot.size,
+      marketAnalysis: store.marketAnalysis.size,
+      priceHistory: store.priceHistory.length,
+      bsrHistory: store.bsrHistory.length,
+      sellerHistory: store.sellerHistory.length,
+    };
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) {
+    return {
+      products: 0,
+      keepaSnapshot: 0,
+      marketAnalysis: 0,
+      priceHistory: 0,
+      bsrHistory: 0,
+      sellerHistory: 0,
+    };
+  }
+  const [p, ks, ma, ph, bh, sh] = await Promise.all([
+    supabase.from("products").select("asin", { count: "exact", head: true }),
+    supabase.from("keepa_snapshot").select("asin", { count: "exact", head: true }),
+    supabase.from("market_analysis").select("asin", { count: "exact", head: true }),
+    supabase.from("price_history").select("asin", { count: "exact", head: true }),
+    supabase.from("bsr_history").select("asin", { count: "exact", head: true }),
+    supabase.from("seller_history").select("asin", { count: "exact", head: true }),
+  ]);
+  return {
+    products: p.count ?? 0,
+    keepaSnapshot: ks.count ?? 0,
+    marketAnalysis: ma.count ?? 0,
+    priceHistory: ph.count ?? 0,
+    bsrHistory: bh.count ?? 0,
+    sellerHistory: sh.count ?? 0,
+  };
+}
+
 /**
  * R4: Cron が tier 別に refresh 対象 ASIN を取り出すためのヘルパー。
  *   - tier 1 (sourcing/live): 24h 経過したものを優先
