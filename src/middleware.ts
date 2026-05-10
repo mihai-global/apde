@@ -5,7 +5,17 @@ import { NextResponse, type NextRequest } from "next/server";
 import { env, mockMode } from "@/lib/env";
 
 const PUBLIC_PATHS = new Set<string>(["/login"]);
-const PUBLIC_PREFIXES = ["/_next", "/api/auth", "/favicon", "/static"];
+// /api/ingest/*, /api/cron/*, /api/refresh は CRON_SECRET ヘッダで認証するため
+// Supabase auth ガードをバイパスする (これを通さないと curl が /login に redirect される)。
+const PUBLIC_PREFIXES = [
+  "/_next",
+  "/api/auth",
+  "/api/cron",
+  "/api/ingest",
+  "/api/refresh",
+  "/favicon",
+  "/static",
+];
 
 export async function middleware(request: NextRequest) {
   // mockMode のときはセッション解決をスキップし、すべての遷移を許可する。
