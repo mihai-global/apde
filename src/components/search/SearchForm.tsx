@@ -2,39 +2,30 @@
 
 import { useState, useTransition } from "react";
 import { Toggle } from "@/components/primitives/Toggle";
-import { generateKeywords } from "@/lib/keywords/generate";
+import { CATEGORIES } from "@/lib/keepa/categories";
 import { yen } from "@/lib/format";
 import { runDiscover } from "@/app/(app)/search/actions";
 
-const CATEGORIES = [
-  "デスク周り / ガジェット",
-  "キッチン雑貨",
-  "美容 / 健康",
-  "ペット用品",
-  "アウトドア",
-  "文房具",
-  "収納 / 整理",
-  "DIY / 工具",
-];
-
 export function SearchForm() {
-  const [cat, setCat] = useState(CATEGORIES[0]);
+  const [categoryId, setCategoryId] = useState(CATEGORIES[0]!.id);
+  const [keyword, setKeyword] = useState("");
   const [priceMin, setPriceMin] = useState(3000);
   const [priceMax, setPriceMax] = useState(8000);
   const [reviewMax, setReviewMax] = useState(500);
-  const [limit, setLimit] = useState(50);
+  const [reviewMin, setReviewMin] = useState(30);
+  const [limit, setLimit] = useState(100);
   const [applyDictionary, setApplyDictionary] = useState(true);
   const [pending, startTransition] = useTransition();
-
-  const { keywords, axes } = generateKeywords(cat);
 
   function handleSubmit() {
     startTransition(async () => {
       await runDiscover({
-        category: cat,
+        category: categoryId,
+        keyword: keyword.trim() || undefined,
         minPrice: priceMin,
         maxPrice: priceMax,
         maxReviews: reviewMax,
+        minReviews: reviewMin,
         limit,
         applyDictionary,
       });
@@ -43,15 +34,22 @@ export function SearchForm() {
 
   return (
     <>
-      <div className="form-grid" style={{ marginBottom: 48 }}>
+      <div className="form-grid" style={{ marginBottom: 32 }}>
         <div>
           <label className="label" htmlFor="cat">カテゴリ</label>
-          <select id="cat" className="select" value={cat} onChange={(e) => setCat(e.target.value)}>
+          <select
+            id="cat"
+            className="select"
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
             {CATEGORIES.map((c) => (
-              <option key={c} value={c}>{c}</option>
+              <option key={c.id} value={c.id}>{c.label}</option>
             ))}
           </select>
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>または自由入力で指定</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            Amazon JP の大カテゴリ。 Keepa rootCategory にマッピング
+          </div>
         </div>
         <div>
           <label className="label" htmlFor="limit">候補件数上限</label>
@@ -61,9 +59,12 @@ export function SearchForm() {
             type="number"
             value={limit}
             min={5}
-            max={100}
+            max={200}
             onChange={(e) => setLimit(Number(e.target.value))}
           />
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+            既定 100 / 最大 200 (Keepa /query 1〜2 ページ)
+          </div>
         </div>
         <div>
           <label className="label" htmlFor="pmin">価格帯</label>
@@ -86,15 +87,42 @@ export function SearchForm() {
           <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>推奨ゾーン ¥3,000〜¥8,000</div>
         </div>
         <div>
-          <label className="label" htmlFor="rev">レビュー数上限</label>
-          <input
-            id="rev"
-            className="input"
-            type="number"
-            value={reviewMax}
-            onChange={(e) => setReviewMax(Number(e.target.value))}
-          />
-          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>競合参入余地の閾値</div>
+          <label className="label" htmlFor="rev">レビュー数</label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              id="revmin"
+              className="input"
+              type="number"
+              value={reviewMin}
+              onChange={(e) => setReviewMin(Number(e.target.value))}
+              placeholder="下限 (例: 30)"
+            />
+            <span className="muted">〜</span>
+            <input
+              id="rev"
+              className="input"
+              type="number"
+              value={reviewMax}
+              onChange={(e) => setReviewMax(Number(e.target.value))}
+              placeholder="上限 (例: 500)"
+            />
+          </div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>レビュー帯で参入余地と信頼度を絞る</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 32 }}>
+        <label className="label" htmlFor="kw">キーワード (任意)</label>
+        <input
+          id="kw"
+          className="input"
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="例: ケーブル収納 / 湯たんぽ / モニター下"
+        />
+        <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
+          空欄ならカテゴリ全体から条件にマッチする商品を取得。
+          指定するとタイトルに部分一致する商品に絞られます。
         </div>
       </div>
 
@@ -104,25 +132,8 @@ export function SearchForm() {
           <Toggle on={applyDictionary} onChange={setApplyDictionary} />
         </div>
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.7 }}>
-          除外ブランド <span style={{ color: "var(--fg-1)" }}>2件</span> ·
-          除外カテゴリ <span style={{ color: "var(--fg-1)" }}>1件</span> ·
-          NGパターン <span style={{ color: "var(--fg-1)" }}>2件</span> ·
-          有望キーワード <span style={{ color: "var(--fg-1)" }}>2件</span>
-        </div>
-      </div>
-
-      <div style={{ borderTop: "1px solid var(--border-1)", paddingTop: 32, marginBottom: 32 }}>
-        <div className="rowsplit" style={{ marginBottom: 16 }}>
-          <div className="eyebrow">生成キーワード (プレビュー)</div>
-          <span className="btn-text blue" style={{ cursor: "default" }}>5軸テンプレ</span>
-        </div>
-        <div className="kw-list">
-          {keywords.map((k) => (
-            <span key={k} className="kw"><span>{k}</span><span className="kx" aria-hidden>×</span></span>
-          ))}
-        </div>
-        <div className="muted" style={{ fontSize: 11, marginTop: 12 }}>
-          軸内訳: 用途 ✓ {axes.use} / 問題解決 ✓ {axes.problem} / サイズ ✓ {axes.size} / セット ✓ {axes.set} / 利用シーン ✓ {axes.scene}
+          除外ブランド / 除外カテゴリ / NGパターン / 有望キーワード を辞書ページで管理。
+          ON のとき探索段階で自動除外され、結果ページの「自動除外」欄に理由付きで表示されます。
         </div>
       </div>
 
@@ -130,11 +141,12 @@ export function SearchForm() {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, color: "var(--fg-3)" }}>想定API消費 (概算)</div>
           <div style={{ fontSize: 18, fontFeatureSettings: '"tnum" 1' }}>
-            {yen(168)}
-            <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>(Keepa 50 + Gemini 1)</span>
+            {yen(15)}
+            <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>
+              (Keepa /query 1〜2 回)
+            </span>
           </div>
         </div>
-        <button type="button" className="pill" disabled>下書き保存</button>
         <button type="button" className="pill solid" onClick={handleSubmit} disabled={pending}>
           {pending ? "探索中…" : "探索を実行"}
           <span className="arrow">›</span>
@@ -153,7 +165,7 @@ export function SearchForm() {
                 animation: "pulse 1s infinite",
               }}
             />
-            キーワード生成 → Amazon検索 → Keepa取得 → 初期判定…
+            Keepa /query → スコアリング → 辞書フィルタ → 上位{limit}件…
           </div>
         </div>
       ) : null}

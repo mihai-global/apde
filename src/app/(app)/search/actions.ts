@@ -6,9 +6,11 @@ import { listDictionary, insertDiscoveryRun } from "@/lib/supabase/repositories"
 
 export interface RunDiscoverInput {
   category: string;
+  keyword?: string;
   minPrice?: number;
   maxPrice?: number;
   maxReviews?: number;
+  minReviews?: number;
   limit?: number;
   applyDictionary: boolean;
 }

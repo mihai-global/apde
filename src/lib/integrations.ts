@@ -2,10 +2,14 @@
 // 各ステップは小さなモジュールに分離し、ここでは流れだけを記述する。
 import { mockMode } from "@/lib/env";
 import { evaluateGates, decisionFromScore, downgradeByGates } from "@/lib/gates";
-import { fetchKeepaSeries, searchKeepa, type KeepaSearchHit, type KeepaSeries } from "@/lib/keepa/client";
-import { deriveKeepaMetrics } from "@/lib/keepa/derive";
+import {
+  fetchKeepaSeries,
+  findProductsByCategory,
+  type KeepaSeries,
+} from "@/lib/keepa/client";
+import { findCategory, DEFAULT_CATEGORY } from "@/lib/keepa/categories";
+import { deriveKeepaMetrics, keepaProductToMetrics } from "@/lib/keepa/derive";
 import { createMockMetrics } from "@/lib/keepa/mock";
-import { generateKeywords } from "@/lib/keywords/generate";
 import { evaluateExclusion, toExcludedCandidate } from "@/lib/exclusion/filter";
 import { generateInsight } from "@/lib/llm";
 import { createFallbackInsight } from "@/lib/llm/mock";
@@ -323,111 +327,70 @@ export interface DiscoverContext {
   dictionary?: DictionaryRow[];
 }
 
-/**
- * Keepa Search で得た hit を AsinMetrics に流し込むためのシード生成。
- * フィールドはほとんどモック既定だが、tryEnrichWithKeepa が後段で
- * 価格・BSR・出品者・レビュー数等を実データで上書きする。
- */
-function createSeedMetricsFromSearch(hit: KeepaSearchHit, category: string): AsinMetrics {
-  return createMockMetrics({
-    asin: hit.asin,
-    title: hit.title ?? hit.asin,
-    brand: hit.brand,
-    category,
-    overrides: { imageUrl: hit.imageUrl },
-  });
-}
-
 export async function discoverProducts(
   input: DiscoveryRequest,
   ctx: DiscoverContext = {},
 ): Promise<DiscoveryResponse> {
   const startedAt = Date.now();
-  const limit = Math.min(Math.max(input.limit ?? 20, 5), 100);
+  const limit = Math.min(Math.max(input.limit ?? 100, 5), 200);
   const applyDictionary = input.applyDictionary ?? true;
-  const { keywords } = generateKeywords(input.category);
   const dictionary = applyDictionary ? (ctx.dictionary ?? []) : [];
+  const keyword = input.keyword?.trim();
+
+  // 入力カテゴリ (UI 表示名 or slug) を Keepa rootCategory ID に解決
+  const appCategory = findCategory(input.category) ?? DEFAULT_CATEGORY;
 
   let useLive = !mockMode.keepa;
   let collected: AsinMetrics[] = [];
+  let liveAsinSet = new Set<string>();
 
   if (useLive) {
-    // Keepa Search で代表キーワード 2 つから ASIN を集める (トークン節約)。
-    // 1 検索 = 10 トークン (Keepa /search 実測)。 perKeyword=15 で 2 検索 = 20 トークン。
-    // 4 検索すると free-tier では 429 を頻発するため意図的に 2 に絞る。
-    const searchKeywords = keywords.slice(0, 2);
-    const perKeyword = 15;
-    const seenAsins = new Set<string>();
-    const seeds: AsinMetrics[] = [];
-    const searchErrors: string[] = [];
-
-    for (let i = 0; i < searchKeywords.length; i += 1) {
-      const kw = searchKeywords[i]!;
-      // 連続コールで 429 を踏まないため 800ms クールダウン (初回はスキップ)
-      if (i > 0) await new Promise((r) => setTimeout(r, 800));
-      try {
-        const hits = await searchKeepa(kw, perKeyword);
-        console.info("[apde:discover] search ok", {
-          keyword: kw,
-          hits: hits.length,
-          firstAsins: hits.slice(0, 3).map((h) => h.asin),
-        });
-        for (const hit of hits) {
-          if (!hit.asin) continue;
-          if (seenAsins.has(hit.asin)) continue;
-          seenAsins.add(hit.asin);
-          seeds.push(createSeedMetricsFromSearch(hit, input.category));
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn("[apde:discover] search failed", { keyword: kw, message });
-        searchErrors.push(message);
-      }
-    }
-
-    console.info("[apde:discover] search summary", {
-      keywordsTried: searchKeywords.length,
-      totalSeeds: seeds.length,
-      uniqueAsins: seenAsins.size,
-      errors: searchErrors.length,
-    });
-
-    if (seeds.length === 0) {
-      console.warn("[apde:keepa] all searches returned empty, falling back to mock", {
-        errors: searchErrors,
+    try {
+      const products = await findProductsByCategory({
+        rootCategory: appCategory.keepaRootCategory,
+        title: keyword || undefined,
+        minPriceJpy: input.minPrice,
+        maxPriceJpy: input.maxPrice,
+        minReviews: input.minReviews,
+        maxReviews: input.maxReviews,
+        limit, // 1 ページ 100、 max 200 は内部で 2 ページ取得
       });
+      console.info("[apde:discover] /query result", {
+        category: appCategory.label,
+        keyword: keyword || null,
+        productsCount: products.length,
+      });
+      if (products.length > 0) {
+        collected = products.map((p) => keepaProductToMetrics(p, appCategory.label));
+        liveAsinSet = new Set(collected.map((m) => m.asin));
+      } else {
+        console.warn("[apde:discover] /query returned 0 products, falling back to mock");
+        useLive = false;
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[apde:discover] /query failed, falling back to mock", { message });
       useLive = false;
-    } else {
-      collected = seeds;
     }
   }
 
   if (!useLive) {
-    // mockMode.keepa = true、または search 全失敗時のフォールバック
-    collected = keywords.flatMap((keyword, keywordIndex) =>
-      Array.from({ length: 3 }, (_, productIndex) =>
-        createMockMetrics({
-          category: input.category,
-          keyword,
-          index: keywordIndex * 3 + productIndex,
-        }),
-      ),
+    // mockMode.keepa = true、または /query 失敗時のフォールバック
+    collected = Array.from({ length: Math.min(limit, 24) }, (_, i) =>
+      createMockMetrics({
+        category: appCategory.label,
+        keyword: keyword ?? "",
+        index: i,
+      }),
     );
   }
 
-  // 各候補を Keepa Product で実データ補完 (キャッシュあり)。
-  // 並列度は 6 程度に抑えてレート制限を避ける。
-  const enrichedAll: Array<{ metrics: AsinMetrics; live: boolean }> = [];
-  const CHUNK = 6;
-  for (let i = 0; i < collected.length; i += CHUNK) {
-    const chunk = collected.slice(i, i + CHUNK);
-    const results = await Promise.all(
-      chunk.map((seed) =>
-        useLive ? tryEnrichWithKeepa(seed) : Promise.resolve({ metrics: seed, live: false }),
-      ),
-    );
-    enrichedAll.push(...results);
-  }
+  // /query が rich product を返してくれるので、 per-ASIN /product enrich はスキップ。
+  // 詳細ページで初めて fetchKeepaSeries が走る運用。
+  const enrichedAll = collected.map((metrics) => ({
+    metrics,
+    live: liveAsinSet.has(metrics.asin),
+  }));
 
   // フィルタ + 除外
   const excluded: ExcludedCandidate[] = [];
@@ -493,12 +456,15 @@ export async function discoverProducts(
 
   return {
     runId: uuid(),
-    category: input.category,
-    keywords,
+    category: appCategory.label,
+    // 後方互換: keywords は単一キーワード or 空配列
+    keywords: keyword ? [keyword] : [],
     filters: {
+      keyword: keyword || undefined,
       minPrice: input.minPrice,
       maxPrice: input.maxPrice,
       maxReviews: input.maxReviews,
+      minReviews: input.minReviews,
       limit,
       applyDictionary,
     },

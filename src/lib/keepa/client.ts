@@ -105,12 +105,16 @@ export interface KeepaSeries {
   currentPrice?: number;
 }
 
-async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  attempts = 3,
+  init?: RequestInit,
+): Promise<Response> {
   let lastError: unknown = null;
   let lastStatus = 0;
   for (let i = 0; i < attempts; i += 1) {
     try {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", ...init });
       if (res.ok) return res;
       lastStatus = res.status;
       // 429 (rate limit) は長めに待つ。 Keepa は token 補充が遅いので 5 秒以上必要。
@@ -144,6 +148,29 @@ export interface KeepaSearchHit {
   imageUrl?: string;
 }
 
+/**
+ * Keepa Product Finder (POST /query) の返却 product。
+ * stats.current から現在値を、 packageWeight / monthlySold で物理スペックを引ける。
+ * 履歴 csv は含まないので、詳細ページでは fetchKeepaSeries を使う。
+ */
+export interface KeepaProduct {
+  asin: string;
+  title?: string;
+  brand?: string;
+  imageUrl?: string;
+  category?: string;
+  weightGrams?: number;
+  /** Keepa 推定の直近 30 日販売数。 -1 なら不明。 */
+  monthlySold?: number;
+  /** 現在値スナップショット (csv と同じ index 順) */
+  currentPrice?: number;
+  currentSellerCount?: number;
+  currentReviewCount?: number;
+  currentRating?: number;
+  currentBsr?: number;
+  isHazmat?: boolean;
+}
+
 interface KeepaSearchResponse {
   tokensConsumed?: number;
   totalResults?: number;
@@ -155,6 +182,26 @@ interface KeepaSearchResponse {
     title?: string;
     brand?: string;
     imagesCSV?: string;
+  }>;
+}
+
+/** Keepa /query (Product Finder) のレスポンス。 */
+interface KeepaQueryResponse {
+  tokensConsumed?: number;
+  tokensLeft?: number;
+  totalResults?: number;
+  products?: Array<{
+    asin: string;
+    title?: string;
+    brand?: string;
+    productGroup?: string;
+    categoryTree?: Array<{ name?: string }>;
+    imagesCSV?: string;
+    packageWeight?: number;
+    itemWeight?: number;
+    monthlySold?: number;
+    isHazmat?: boolean;
+    stats?: { current?: number[] };
   }>;
 }
 
@@ -210,6 +257,118 @@ export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearch
   }
 
   return [];
+}
+
+export interface FindProductsInput {
+  /** Keepa Amazon rootCategory ID。 必須 */
+  rootCategory: number;
+  /** タイトル部分一致 (空文字なら全件) */
+  title?: string;
+  minPriceJpy?: number;
+  maxPriceJpy?: number;
+  minReviews?: number;
+  maxReviews?: number;
+  /** 取得件数上限 (1〜200)。 1 ページ最大 100、超える場合は 2 ページ目を取得する。 */
+  limit?: number;
+}
+
+const ARRAY_INDEX_QUERY = ARRAY_INDEX; // alias
+
+/**
+ * Keepa Product Finder で商品を一括取得。
+ * 1 コール 5〜10 トークンで最大 100 件 (perPage=100)。 200 件まで欲しい場合は page=1 を追加で呼ぶ。
+ */
+export async function findProductsByCategory(input: FindProductsInput): Promise<KeepaProduct[]> {
+  if (!env.keepa.configured) throw new Error("Keepa API key not configured");
+  const targetLimit = Math.min(Math.max(input.limit ?? 100, 1), 200);
+
+  const collected: KeepaProduct[] = [];
+  for (let page = 0; page < 2 && collected.length < targetLimit; page += 1) {
+    const remaining = targetLimit - collected.length;
+    const perPage = Math.min(remaining, 100);
+    const selection: Record<string, unknown> = {
+      rootCategory: input.rootCategory,
+      productType: [0],
+      perPage,
+      page,
+      sort: [["current_REVIEWS", "desc"]],
+    };
+    // 価格は cents (×100)
+    if (typeof input.minPriceJpy === "number") {
+      selection.current_AMAZON_gte = input.minPriceJpy * 100;
+      selection.current_NEW_gte = input.minPriceJpy * 100;
+    }
+    if (typeof input.maxPriceJpy === "number") {
+      selection.current_AMAZON_lte = input.maxPriceJpy * 100;
+      selection.current_NEW_lte = input.maxPriceJpy * 100;
+    }
+    if (typeof input.minReviews === "number") selection.current_COUNT_REVIEWS_gte = input.minReviews;
+    if (typeof input.maxReviews === "number") selection.current_COUNT_REVIEWS_lte = input.maxReviews;
+    if (input.title && input.title.trim().length > 0) selection.title = input.title.trim();
+
+    const url = `${BASE_URL}/query?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}`;
+    const start = Date.now();
+    const res = await fetchWithRetry(url, 3, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(selection),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Keepa /query returned ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const data: KeepaQueryResponse = await res.json();
+    void usage.keepa("/query", data.tokensConsumed ?? 5);
+    const products = Array.isArray(data.products) ? data.products : [];
+    console.info("[apde:keepa:query]", {
+      rootCategory: input.rootCategory,
+      title: input.title ?? null,
+      page,
+      productsCount: products.length,
+      tokensConsumed: data.tokensConsumed,
+      tokensLeft: data.tokensLeft,
+      totalResults: data.totalResults,
+      durationMs: Date.now() - start,
+    });
+
+    for (const p of products) {
+      if (typeof p.asin !== "string" || p.asin.length === 0) continue;
+      const currentArr = p.stats?.current ?? [];
+      const pickCurrent = (idx: number): number | undefined => {
+        const v = currentArr[idx];
+        return typeof v === "number" && v > 0 ? v : undefined;
+      };
+      const weightDecigrams = p.packageWeight ?? p.itemWeight;
+      const weightGrams =
+        typeof weightDecigrams === "number" && weightDecigrams > 0
+          ? Math.round(weightDecigrams / 10)
+          : undefined;
+      const categoryName = p.categoryTree?.[p.categoryTree.length - 1]?.name;
+      const ratingRaw = pickCurrent(ARRAY_INDEX_QUERY.RATING);
+      collected.push({
+        asin: p.asin,
+        title: p.title,
+        brand: p.brand,
+        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+        category: categoryName ?? p.productGroup,
+        weightGrams,
+        monthlySold:
+          typeof p.monthlySold === "number" && p.monthlySold >= 0 ? p.monthlySold : undefined,
+        currentPrice:
+          pickCurrent(ARRAY_INDEX_QUERY.AMAZON) ?? pickCurrent(ARRAY_INDEX_QUERY.NEW),
+        currentSellerCount: pickCurrent(ARRAY_INDEX_QUERY.COUNT_NEW),
+        currentReviewCount: pickCurrent(ARRAY_INDEX_QUERY.COUNT_REVIEWS),
+        currentRating: ratingRaw !== undefined ? ratingRaw / 10 : undefined,
+        currentBsr: pickCurrent(ARRAY_INDEX_QUERY.SALES_RANK),
+        isHazmat: p.isHazmat,
+      });
+    }
+
+    // ページネーション継続条件: 取得結果が perPage いっぱいで、 limit 未達のときのみ次ページへ
+    if (products.length < perPage) break;
+  }
+
+  return collected.slice(0, targetLimit);
 }
 
 export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {

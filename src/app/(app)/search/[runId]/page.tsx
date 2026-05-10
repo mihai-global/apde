@@ -1,8 +1,7 @@
 import { notFound } from "next/navigation";
 import { CandidateListView } from "@/components/list/CandidateListView";
-import { Seg } from "@/components/primitives/Seg";
 import { Crumbs } from "@/components/shell/Crumbs";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, yen } from "@/lib/format";
 import { getDiscoveryRun } from "@/lib/supabase/repositories";
 
 export const dynamic = "force-dynamic";
@@ -33,8 +32,15 @@ export default async function CandidatesPage({
           </div>
         </div>
         <div className="muted" style={{ marginBottom: 32 }}>
-          {run.candidates.length}件の候補 / 別途{run.excluded_candidates.length}件を自動除外 ·
-          キーワード{run.generated_keywords.length}件で生成 · 取得 {formatDateTime(run.created_at)}
+          {run.candidates.length}件の候補 / 別途{run.excluded_candidates.length}件を自動除外
+          {run.filters.keyword
+            ? ` · キーワード "${run.filters.keyword}"`
+            : " · カテゴリ全体"}
+          {typeof run.filters.minPrice === "number" || typeof run.filters.maxPrice === "number"
+            ? ` · 価格 ${run.filters.minPrice ? yen(run.filters.minPrice) : "〜"}${run.filters.maxPrice ? `〜${yen(run.filters.maxPrice)}` : "+"}`
+            : ""}
+          {typeof run.filters.maxReviews === "number" ? ` · レビュー ≤${run.filters.maxReviews}` : ""}
+          {" · 取得 "}{formatDateTime(run.created_at)}
         </div>
 
         <CandidateListView candidates={run.candidates} excluded={run.excluded_candidates} />

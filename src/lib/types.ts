@@ -172,9 +172,13 @@ export interface AnalysisResult {
 
 export interface DiscoveryRequest {
   category: string;
+  /** 任意キーワード (Keepa /query の title フィルタに使う) */
+  keyword?: string;
   minPrice?: number;
   maxPrice?: number;
   maxReviews?: number;
+  /** Keepa Product Finder の current_REVIEWS_gte に渡す下限 (デフォルト 30) */
+  minReviews?: number;
   limit?: number;
   applyDictionary?: boolean;
   forceRefresh?: boolean;
@@ -213,11 +217,14 @@ export interface DiscoveryCandidate {
 export interface DiscoveryResponse {
   runId: string;
   category: string;
+  /** 後方互換: 旧 5 軸テンプレ。新フローでは `[keyword]` または `[]`。 */
   keywords: string[];
   filters: {
+    keyword?: string;
     minPrice?: number;
     maxPrice?: number;
     maxReviews?: number;
+    minReviews?: number;
     limit: number;
     applyDictionary: boolean;
   };

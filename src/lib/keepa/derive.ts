@@ -1,4 +1,6 @@
 // Keepa 時系列から派生指標 (CV, セール頻度, 価格下落率, Buy Box 集中度) を計算する。
+import { createMockMetrics } from "@/lib/keepa/mock";
+import type { KeepaProduct } from "@/lib/keepa/client";
 import type { AsinMetrics, KeepaDerivedMetrics } from "@/lib/types";
 
 export function deriveKeepaMetrics(metrics: AsinMetrics): KeepaDerivedMetrics {
@@ -33,4 +35,57 @@ export function deriveKeepaMetrics(metrics: AsinMetrics): KeepaDerivedMetrics {
     buyBoxConcentration: metrics.buyBoxConcentration,
     priceDropRate90d: Math.round(priceDropRate90d * 10) / 10,
   };
+}
+
+/**
+ * Keepa /query で取得した KeepaProduct を AsinMetrics に変換する。
+ * モックを骨格として使い、Keepa から取れた値を上書きする。
+ * 詳細ページに飛んだ際は別途 fetchKeepaSeries で history が補完される。
+ */
+export function keepaProductToMetrics(product: KeepaProduct, fallbackCategory: string): AsinMetrics {
+  const base = createMockMetrics({
+    asin: product.asin,
+    title: product.title ?? product.asin,
+    brand: product.brand,
+    category: product.category ?? fallbackCategory,
+    overrides: { imageUrl: product.imageUrl },
+  });
+
+  if (typeof product.currentPrice === "number") base.currentPrice = Math.round(product.currentPrice);
+  if (typeof product.currentSellerCount === "number") {
+    base.sellerCount = Math.max(1, Math.round(product.currentSellerCount));
+  }
+  if (typeof product.currentReviewCount === "number") {
+    base.reviewCount = Math.max(0, Math.round(product.currentReviewCount));
+  }
+  if (typeof product.currentRating === "number") base.rating = product.currentRating;
+  if (typeof product.weightGrams === "number" && product.weightGrams > 0) {
+    base.weightGrams = product.weightGrams;
+    base.sizeTier =
+      product.weightGrams > 1000
+        ? "OVERSIZE"
+        : product.weightGrams <= 500
+          ? "SMALL_STANDARD"
+          : "LARGE_STANDARD";
+  }
+  if (typeof product.monthlySold === "number" && product.monthlySold > 0) {
+    base.estimatedMonthlySales = product.monthlySold;
+    base.monthlySalesSource = "keepa";
+  } else if (typeof product.currentBsr === "number" && product.currentBsr > 0) {
+    // /query は BSR を返すので、 monthlySold が無くてもこちらで荒く推定可能
+    const bsr = product.currentBsr;
+    let estimated = 10;
+    if (bsr < 100) estimated = 1500;
+    else if (bsr < 1000) estimated = 500;
+    else if (bsr < 5000) estimated = 200;
+    else if (bsr < 20000) estimated = 80;
+    else if (bsr < 100000) estimated = 30;
+    base.estimatedMonthlySales = estimated;
+    base.monthlySalesSource = "bsr";
+  } else {
+    base.monthlySalesSource = "seed";
+  }
+  if (product.isHazmat) base.isHazmat = true;
+
+  return base;
 }
