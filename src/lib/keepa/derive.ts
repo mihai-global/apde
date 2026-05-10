@@ -1,5 +1,6 @@
 // Keepa 時系列から派生指標 (CV, セール頻度, 価格下落率, Buy Box 集中度) を計算する。
 import { createMockMetrics } from "@/lib/keepa/mock";
+import { applyBrandPolicy } from "@/lib/scoring/brand-policy";
 import type { KeepaProduct } from "@/lib/keepa/client";
 import type { AsinMetrics, KeepaDerivedMetrics } from "@/lib/types";
 
@@ -87,5 +88,7 @@ export function keepaProductToMetrics(product: KeepaProduct, fallbackCategory: s
   }
   if (product.isHazmat) base.isHazmat = true;
 
-  return base;
+  // ブランド / カテゴリ ポリシーで mock seed 由来の structural 指標を上書き。
+  // (例: KIOXIA の microSD なら brandStrength=85 / oemFeasibility=8 / complexity=HIGH)
+  return applyBrandPolicy(base);
 }
