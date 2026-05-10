@@ -178,8 +178,10 @@ export async function ingestDiscover(
     return { ingested: 0, asins: [], durationMs: Date.now() - start };
   }
 
-  // /query が ASIN だけ返した場合は bulk /product (history=0) で 1 回 enrich
-  const needsEnrich = products.filter((p) => !p.title || !p.imageUrl).map((p) => p.asin);
+  // /query が ASIN だけ返した場合は bulk /product (history=0) で enrich。
+  // ただし enrich は 1 ASIN ≈ 1 token 課金されるので、 title が空のものに限定する
+  // (画像は /query?&images=1 で取得済みのはず)。
+  const needsEnrich = products.filter((p) => !p.title).map((p) => p.asin);
   let enriched: Map<string, KeepaProduct> = new Map();
   if (needsEnrich.length > 0) {
     try {
