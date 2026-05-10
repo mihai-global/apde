@@ -302,14 +302,16 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
       page,
       sort: [["current_REVIEWS", "desc"]],
     };
-    // 価格は cents (×100)。 current_AMAZON は Amazon 自身が出品者のときのみ有効で、
-    // JP の多くの商品は 3rd-party のみ (current_NEW のみ有効) のため、 current_NEW
-    // だけで絞り込む。 current_AMAZON にも条件を入れると AND で大半が落ちて 0 件に。
+    // Keepa は JPY を raw yen で保持する (USD/EUR は cents だが、 JPY に subunit が
+    // ないため整数値そのまま)。 過去に *100 していたが ¥300,000+ の商品が返って
+    // しまうバグだったので、 yen 値をそのまま渡す。
+    // current_AMAZON は Amazon 自身が出品者のときのみ有効で、 JP の多くの商品は
+    // 3rd-party のみ (current_NEW のみ有効) のため、 current_NEW だけで絞り込む。
     if (typeof input.minPriceJpy === "number") {
-      selection.current_NEW_gte = input.minPriceJpy * 100;
+      selection.current_NEW_gte = input.minPriceJpy;
     }
     if (typeof input.maxPriceJpy === "number") {
-      selection.current_NEW_lte = input.maxPriceJpy * 100;
+      selection.current_NEW_lte = input.maxPriceJpy;
     }
     if (typeof input.minReviews === "number") selection.current_COUNT_REVIEWS_gte = input.minReviews;
     if (typeof input.maxReviews === "number") selection.current_COUNT_REVIEWS_lte = input.maxReviews;
