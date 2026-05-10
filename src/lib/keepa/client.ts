@@ -466,6 +466,55 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
   return out;
 }
 
+/**
+ * Keepa /category?category=0&domain=5 で Amazon JP のルートカテゴリ一覧を取得する。
+ * 1 コール 1 token 程度。 categories.ts の rootCategory ID 検証に使う。
+ * 戻り値は { catId, name, productCount? } の配列。
+ */
+export interface KeepaRootCategory {
+  catId: number;
+  name: string;
+  productCount?: number;
+  children?: number[];
+}
+
+interface KeepaCategoryResponse {
+  tokensConsumed?: number;
+  categories?: Record<
+    string,
+    {
+      catId?: number;
+      name?: string;
+      productCount?: number;
+      children?: number[];
+      parent?: number;
+    }
+  >;
+}
+
+export async function fetchKeepaRootCategories(): Promise<KeepaRootCategory[]> {
+  if (!env.keepa.configured) throw new Error("Keepa API key not configured");
+  // category=0 でルートのみを取得 (子は children IDs として返る)
+  const url = `${BASE_URL}/category?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&category=0`;
+  const res = await fetchWithRetry(url, 2);
+  if (!res.ok) throw new Error(`Keepa /category returned ${res.status}`);
+  const data = (await res.json()) as KeepaCategoryResponse;
+  void usage.keepa("/category", data.tokensConsumed ?? 1);
+  const map = data.categories ?? {};
+  const out: KeepaRootCategory[] = [];
+  for (const [, cat] of Object.entries(map)) {
+    if (typeof cat.catId !== "number") continue;
+    if (typeof cat.name !== "string" || cat.name.length === 0) continue;
+    out.push({
+      catId: cat.catId,
+      name: cat.name,
+      productCount: cat.productCount,
+      children: cat.children,
+    });
+  }
+  return out;
+}
+
 /** Keepa /token のレスポンス。 R4 Cron の budget 算出に使う。 */
 export interface KeepaTokenStatus {
   /** 現在の残トークン (free-tier は最大 60) */
