@@ -458,6 +458,33 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
   return out;
 }
 
+/** Keepa /token のレスポンス。 R4 Cron の budget 算出に使う。 */
+export interface KeepaTokenStatus {
+  /** 現在の残トークン (free-tier は最大 60) */
+  tokensLeft: number;
+  /** 1 分あたりの補充トークン数 */
+  refillRate: number;
+  /** 次のトークン補充まで何 ms 後か */
+  refillIn: number;
+}
+
+/**
+ * Keepa /token エンドポイント。 0 token 消費 (使用量にカウントされない)。
+ * Cron が呼び出し前の budget を決めるのに使う。
+ */
+export async function fetchKeepaTokenStatus(): Promise<KeepaTokenStatus> {
+  if (!env.keepa.configured) throw new Error("Keepa API key not configured");
+  const url = `${BASE_URL}/token?key=${encodeURIComponent(env.keepa.apiKey)}`;
+  const res = await fetchWithRetry(url, 2);
+  if (!res.ok) throw new Error(`Keepa /token returned ${res.status}`);
+  const data = (await res.json()) as Partial<KeepaTokenStatus>;
+  return {
+    tokensLeft: typeof data.tokensLeft === "number" ? data.tokensLeft : 0,
+    refillRate: typeof data.refillRate === "number" ? data.refillRate : 1,
+    refillIn: typeof data.refillIn === "number" ? data.refillIn : 60_000,
+  };
+}
+
 export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
   if (!env.keepa.configured) {
     throw new Error("Keepa API key not configured");

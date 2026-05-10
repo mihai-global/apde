@@ -15,14 +15,24 @@ import type {
   ApiProvider,
   ApiUsageRow,
   AppSettingRow,
+  BsrHistoryRow,
   DictionaryRow,
   DictionaryType,
   DiscoveryRunRow,
   KeepaDataRow,
+  KeepaSnapshotRow,
+  MarketAnalysisRow,
+  MarketDecision,
+  MonthlySalesSource,
+  PriceHistoryRow,
+  PriceType,
   PurchaseFeedbackRow,
+  SellerHistoryRow,
+  Tier,
   WatchlistRow,
   WatchlistStatus,
 } from "@/lib/types";
+import { deriveTierFromStatus } from "@/lib/types";
 
 // ─── helpers ─────────────────────────────────────────────────────────
 
@@ -718,3 +728,356 @@ export async function upsertFeedback(row: PurchaseFeedbackRow): Promise<void> {
   const { error } = await supabase.from("purchase_feedback").upsert(row, { onConflict: "asin" });
   if (error) throw error;
 }
+
+// ─── R1: keepa_snapshot ────────────────────────────────────────────────
+
+export async function upsertKeepaSnapshot(row: KeepaSnapshotRow): Promise<void> {
+  if (mockMode.supabase) {
+    getMockStore().keepaSnapshot.set(row.asin, row);
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const { error } = await supabase.from("keepa_snapshot").upsert(row, { onConflict: "asin" });
+  if (error) {
+    console.warn("[apde] keepa_snapshot upsert failed", error);
+  }
+}
+
+export async function getKeepaSnapshot(asin: string): Promise<KeepaSnapshotRow | null> {
+  if (mockMode.supabase) {
+    return getMockStore().keepaSnapshot.get(asin) ?? null;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("keepa_snapshot")
+    .select("*")
+    .eq("asin", asin)
+    .maybeSingle();
+  if (error) {
+    console.warn("[apde] keepa_snapshot read failed", error);
+    return null;
+  }
+  return (data as KeepaSnapshotRow | null) ?? null;
+}
+
+// ─── R1: market_analysis ──────────────────────────────────────────────
+
+export async function upsertMarketAnalysis(row: MarketAnalysisRow): Promise<void> {
+  if (mockMode.supabase) {
+    getMockStore().marketAnalysis.set(row.asin, row);
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const { error } = await supabase.from("market_analysis").upsert(row, { onConflict: "asin" });
+  if (error) {
+    console.warn("[apde] market_analysis upsert failed", error);
+  }
+}
+
+export async function getMarketAnalysis(asin: string): Promise<MarketAnalysisRow | null> {
+  if (mockMode.supabase) {
+    return getMockStore().marketAnalysis.get(asin) ?? null;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("market_analysis")
+    .select("*")
+    .eq("asin", asin)
+    .maybeSingle();
+  if (error) {
+    console.warn("[apde] market_analysis read failed", error);
+    return null;
+  }
+  return (data as MarketAnalysisRow | null) ?? null;
+}
+
+export interface MarketAnalysisFilter {
+  minScore?: number;          // market_score >=
+  minPrice?: number;          // current_new_yen >=
+  maxPrice?: number;          // current_new_yen <=
+  maxReviews?: number;        // count_reviews <=
+  category?: string;          // products.category 一致 (将来 category_tree @> JSON にする)
+  decision?: MarketDecision;
+  limit?: number;
+}
+
+/** market_score 降順で candidate を返す。 R2 (DB-only Search) の主クエリ。 */
+export async function listMarketAnalysis(
+  filter: MarketAnalysisFilter = {},
+): Promise<Array<MarketAnalysisRow & { snapshot: KeepaSnapshotRow | null; product: { title: string; category: string; brand: string | null; image_url: string | null } | null }>> {
+  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 500);
+
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const rows = Array.from(store.marketAnalysis.values()).filter((r) => {
+      if (filter.minScore !== undefined && (r.market_score ?? 0) < filter.minScore) return false;
+      if (filter.decision && r.decision !== filter.decision) return false;
+      const snap = store.keepaSnapshot.get(r.asin);
+      const price = snap?.current_new_yen ?? snap?.current_amazon_yen ?? null;
+      if (filter.minPrice !== undefined && (price ?? Infinity) < filter.minPrice) return false;
+      if (filter.maxPrice !== undefined && (price ?? -Infinity) > filter.maxPrice) return false;
+      if (filter.maxReviews !== undefined && (snap?.count_reviews ?? 0) > filter.maxReviews) return false;
+      if (filter.category) {
+        const prod = store.products.get(r.asin);
+        if (prod && prod.category && filter.category && !prod.category.includes(filter.category)) return false;
+      }
+      return true;
+    });
+    rows.sort((a, b) => (b.market_score ?? 0) - (a.market_score ?? 0));
+    return rows.slice(0, limit).map((r) => {
+      const prod = store.products.get(r.asin);
+      return {
+        ...r,
+        snapshot: store.keepaSnapshot.get(r.asin) ?? null,
+        product: prod
+          ? {
+              title: prod.title,
+              category: prod.category,
+              brand: prod.brand,
+              image_url: prod.image_url ?? null,
+            }
+          : null,
+      };
+    });
+  }
+
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+  // 1) market_analysis をスコア順にスライス
+  let q = supabase.from("market_analysis").select("*").order("market_score", { ascending: false });
+  if (filter.minScore !== undefined) q = q.gte("market_score", filter.minScore);
+  if (filter.decision) q = q.eq("decision", filter.decision);
+  q = q.limit(limit);
+  const { data: maRows, error } = await q;
+  if (error) {
+    console.warn("[apde] listMarketAnalysis failed", error);
+    return [];
+  }
+  const list = (maRows ?? []) as MarketAnalysisRow[];
+  if (list.length === 0) return [];
+
+  // 2) snapshot + product を batched fetch
+  const asins = list.map((r) => r.asin);
+  const [{ data: snaps }, { data: prods }] = await Promise.all([
+    supabase.from("keepa_snapshot").select("*").in("asin", asins),
+    supabase.from("products").select("asin,title,category,brand,image_url,current_price").in("asin", asins),
+  ]);
+  const snapMap = new Map<string, KeepaSnapshotRow>(
+    ((snaps ?? []) as KeepaSnapshotRow[]).map((s) => [s.asin, s]),
+  );
+  type ProdMini = { asin: string; title: string; category: string; brand: string | null; image_url: string | null; current_price: number | null };
+  const prodMap = new Map<string, ProdMini>(((prods ?? []) as ProdMini[]).map((p) => [p.asin, p]));
+
+  // 3) snapshot/product 側のフィルタを後段で適用
+  return list
+    .filter((r) => {
+      const s = snapMap.get(r.asin) ?? null;
+      const price = s?.current_new_yen ?? s?.current_amazon_yen ?? null;
+      if (filter.minPrice !== undefined && (price ?? Infinity) < filter.minPrice) return false;
+      if (filter.maxPrice !== undefined && (price ?? -Infinity) > filter.maxPrice) return false;
+      if (filter.maxReviews !== undefined && (s?.count_reviews ?? 0) > filter.maxReviews) return false;
+      if (filter.category) {
+        const p = prodMap.get(r.asin);
+        if (p && p.category && !p.category.includes(filter.category)) return false;
+      }
+      return true;
+    })
+    .map((r) => ({
+      ...r,
+      snapshot: snapMap.get(r.asin) ?? null,
+      product: (() => {
+        const p = prodMap.get(r.asin);
+        return p
+          ? { title: p.title, category: p.category, brand: p.brand, image_url: p.image_url }
+          : null;
+      })(),
+    }));
+}
+
+// ─── R1: history テーブル群 (時系列) ──────────────────────────────────
+
+export async function insertPriceHistory(rows: PriceHistoryRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const seen = new Set(store.priceHistory.map((r) => `${r.asin}|${r.price_type}|${r.ts}`));
+    for (const r of rows) {
+      const key = `${r.asin}|${r.price_type}|${r.ts}`;
+      if (seen.has(key)) continue;
+      store.priceHistory.push(r);
+      seen.add(key);
+    }
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  // ON CONFLICT DO NOTHING 相当: ignoreDuplicates: true
+  const { error } = await supabase
+    .from("price_history")
+    .upsert(rows, { onConflict: "asin,price_type,ts", ignoreDuplicates: true });
+  if (error) {
+    console.warn("[apde] price_history insert failed", error);
+  }
+}
+
+export async function insertBsrHistory(rows: BsrHistoryRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const seen = new Set(store.bsrHistory.map((r) => `${r.asin}|${r.ts}`));
+    for (const r of rows) {
+      const key = `${r.asin}|${r.ts}`;
+      if (seen.has(key)) continue;
+      store.bsrHistory.push(r);
+      seen.add(key);
+    }
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("bsr_history")
+    .upsert(rows, { onConflict: "asin,ts", ignoreDuplicates: true });
+  if (error) {
+    console.warn("[apde] bsr_history insert failed", error);
+  }
+}
+
+export async function insertSellerHistory(rows: SellerHistoryRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const seen = new Set(store.sellerHistory.map((r) => `${r.asin}|${r.ts}`));
+    for (const r of rows) {
+      const key = `${r.asin}|${r.ts}`;
+      if (seen.has(key)) continue;
+      store.sellerHistory.push(r);
+      seen.add(key);
+    }
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const { error } = await supabase
+    .from("seller_history")
+    .upsert(rows, { onConflict: "asin,ts", ignoreDuplicates: true });
+  if (error) {
+    console.warn("[apde] seller_history insert failed", error);
+  }
+}
+
+// ─── R1: products refresh タイムスタンプ + Tier ───────────────────────
+
+/**
+ * products.keepa_last_diff_at / keepa_last_full_at / tier を更新する。
+ * Tier は watchlist.status から自動派生 (deriveTierFromStatus)。
+ * 渡された値がない列は更新しない。
+ */
+export async function updateProductRefreshMeta(input: {
+  asin: string;
+  diffAt?: string | null;       // ISO timestamp (history=0 取得時)
+  fullAt?: string | null;       // ISO timestamp (history=1 取得時)
+  tier?: Tier;                  // 明示指定 (省略時は触らない)
+}): Promise<void> {
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const existing = store.productMeta.get(input.asin) ?? {
+      keepa_last_full_at: null,
+      keepa_last_diff_at: null,
+      tier: 3 as Tier,
+    };
+    if (input.diffAt !== undefined) existing.keepa_last_diff_at = input.diffAt;
+    if (input.fullAt !== undefined) existing.keepa_last_full_at = input.fullAt;
+    if (input.tier !== undefined) existing.tier = input.tier;
+    store.productMeta.set(input.asin, existing);
+    return;
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return;
+  const patch: Record<string, unknown> = {};
+  if (input.diffAt !== undefined) patch.keepa_last_diff_at = input.diffAt;
+  if (input.fullAt !== undefined) patch.keepa_last_full_at = input.fullAt;
+  if (input.tier !== undefined) patch.tier = input.tier;
+  if (Object.keys(patch).length === 0) return;
+  const { error } = await supabase.from("products").update(patch).eq("asin", input.asin);
+  if (error) {
+    console.warn("[apde] update products refresh meta failed", error);
+  }
+}
+
+/** watchlist.status から Tier を派生し、 products.tier に反映する。 R1 で使用。 */
+export async function syncTierFromWatchlist(asin: string): Promise<Tier> {
+  let status: WatchlistStatus | null = null;
+  if (mockMode.supabase) {
+    const wl = getMockStore().watchlist.get(asin);
+    status = wl?.status ?? null;
+  } else {
+    const supabase = getServiceRoleSupabase();
+    if (supabase) {
+      const { data } = await supabase
+        .from("watchlist")
+        .select("status")
+        .eq("asin", asin)
+        .maybeSingle();
+      status = ((data as { status?: WatchlistStatus } | null)?.status) ?? null;
+    }
+  }
+  const tier = deriveTierFromStatus(status);
+  await updateProductRefreshMeta({ asin, tier });
+  return tier;
+}
+
+/**
+ * R4: Cron が tier 別に refresh 対象 ASIN を取り出すためのヘルパー。
+ *   - tier 1 (sourcing/live): 24h 経過したものを優先
+ *   - tier 2 (candidate)    : 7d 経過したものを優先
+ *   - tier 3                : このルートでは扱わない (オンデマンドのみ)
+ *
+ * 戻り値は keepa_last_diff_at の昇順 (古いものから先)。 NULL は最古扱い。
+ */
+export async function listProductsForRefresh(input: {
+  tier: Tier;
+  olderThan: string; // ISO timestamp。 keepa_last_diff_at < olderThan を対象
+  limit?: number;
+}): Promise<string[]> {
+  const limit = Math.min(Math.max(input.limit ?? 200, 1), 500);
+
+  if (mockMode.supabase) {
+    const store = getMockStore();
+    const list: Array<{ asin: string; ts: string }> = [];
+    for (const [asin, meta] of store.productMeta.entries()) {
+      if (meta.tier !== input.tier) continue;
+      const lastDiff = meta.keepa_last_diff_at;
+      // null は最古扱い: 最初に処理させる
+      if (lastDiff === null || lastDiff < input.olderThan) {
+        list.push({ asin, ts: lastDiff ?? "1970-01-01T00:00:00Z" });
+      }
+    }
+    list.sort((a, b) => a.ts.localeCompare(b.ts));
+    return list.slice(0, limit).map((x) => x.asin);
+  }
+
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+  // keepa_last_diff_at < olderThan OR is null  を or.() で表現
+  const { data, error } = await supabase
+    .from("products")
+    .select("asin,keepa_last_diff_at")
+    .eq("tier", input.tier)
+    .or(`keepa_last_diff_at.is.null,keepa_last_diff_at.lt.${input.olderThan}`)
+    .order("keepa_last_diff_at", { ascending: true, nullsFirst: true })
+    .limit(limit);
+  if (error) {
+    console.warn("[apde] listProductsForRefresh failed", error);
+    return [];
+  }
+  return ((data ?? []) as Array<{ asin: string }>).map((p) => p.asin);
+}
+
+// re-export types used by ingest layer for convenience
+export type { MonthlySalesSource, PriceType };
+

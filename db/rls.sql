@@ -2,7 +2,11 @@
 -- 参考: https://supabase.com/docs/guides/database/postgres/row-level-security
 
 alter table products              enable row level security;
-alter table keepa_data            enable row level security;
+alter table price_history         enable row level security;
+alter table bsr_history           enable row level security;
+alter table seller_history        enable row level security;
+alter table keepa_snapshot        enable row level security;
+alter table market_analysis       enable row level security;
 alter table analysis              enable row level security;
 alter table discovery_runs        enable row level security;
 alter table watchlist             enable row level security;
@@ -17,7 +21,8 @@ do $$
 declare
   tbl text;
   tables text[] := array[
-    'products','keepa_data','analysis','discovery_runs','watchlist','dictionary',
+    'products','price_history','bsr_history','seller_history','keepa_snapshot',
+    'market_analysis','analysis','discovery_runs','watchlist','dictionary',
     'purchase_feedback','api_usage','app_settings','analysis_threads'
   ];
 begin

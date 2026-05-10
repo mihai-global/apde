@@ -1,0 +1,419 @@
+// Ingest 層: Keepa API → 新スキーマ (products / keepa_snapshot / market_analysis / *_history) への
+// 永続化を担う。 /api/ingest/* と Cron がこの関数群を呼ぶ唯一のエントリポイント。
+//
+// 設計:
+// - ingestDiscover: /query で 1 コール 100 件取得。 history なし、 snapshot のみ書き込み。
+// - ingestFull:     /product?history=1 で 1 ASIN 全 history を取り、 *_history テーブルに展開。
+// - ingestDiff:     /product?history=0 で 1 ASIN snapshot のみ更新。
+// - recomputeMarketAnalysis: Keepa を呼ばず、 DB の snapshot から market_analysis を再計算。
+//
+// すべての関数は冪等。 ingest 系は products に必ず upsert してから history 系を insert する
+// (FK 制約の都合)。
+
+import { evaluateGates } from "@/lib/gates";
+import {
+  fetchKeepaProductsBatch,
+  fetchKeepaSeries,
+  findProductsByCategory,
+  type KeepaProduct,
+  type KeepaSeries,
+} from "@/lib/keepa/client";
+import { findCategory, DEFAULT_CATEGORY } from "@/lib/keepa/categories";
+import { keepaProductToMetrics, deriveKeepaMetrics } from "@/lib/keepa/derive";
+import { computeProfit } from "@/lib/profit";
+import { scoreAsin } from "@/lib/scoring";
+import { computeMarketScore, deriveAxesFromBreakdown } from "@/lib/scoring/market";
+import {
+  insertBsrHistory,
+  insertPriceHistory,
+  insertSellerHistory,
+  syncTierFromWatchlist,
+  updateProductRefreshMeta,
+  upsertKeepaSnapshot,
+  upsertMarketAnalysis,
+  upsertProductMaster,
+  getKeepaSnapshot,
+} from "@/lib/supabase/repositories";
+import type {
+  AsinMetrics,
+  BsrHistoryRow,
+  KeepaSnapshotRow,
+  MarketAnalysisRow,
+  MonthlySalesSource,
+  PriceHistoryRow,
+  SellerHistoryRow,
+} from "@/lib/types";
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function snapshotFromKeepaProduct(p: KeepaProduct): KeepaSnapshotRow {
+  return {
+    asin: p.asin,
+    current_amazon_yen: typeof p.currentPrice === "number" ? Math.round(p.currentPrice) : null,
+    current_new_yen: typeof p.currentPrice === "number" ? Math.round(p.currentPrice) : null,
+    buy_box_yen: null,
+    bsr: typeof p.currentBsr === "number" ? Math.round(p.currentBsr) : null,
+    count_new: typeof p.currentSellerCount === "number" ? Math.round(p.currentSellerCount) : null,
+    count_reviews:
+      typeof p.currentReviewCount === "number" ? Math.round(p.currentReviewCount) : null,
+    rating_avg: typeof p.currentRating === "number" ? p.currentRating : null,
+    monthly_sold: typeof p.monthlySold === "number" && p.monthlySold > 0 ? p.monthlySold : null,
+    package_weight_g: typeof p.weightGrams === "number" ? p.weightGrams : null,
+    category_tree: p.category ? [{ name: p.category }] : null,
+    fetched_at: nowIso(),
+  };
+}
+
+function snapshotFromKeepaSeries(asin: string, s: KeepaSeries): KeepaSnapshotRow {
+  return {
+    asin,
+    current_amazon_yen:
+      typeof s.currentPrice === "number" ? Math.round(s.currentPrice) : null,
+    current_new_yen: typeof s.currentPrice === "number" ? Math.round(s.currentPrice) : null,
+    buy_box_yen: s.buyBox.length > 0 ? Math.round(s.buyBox.at(-1)!.value) : null,
+    bsr: s.bsr.length > 0 ? Math.round(s.bsr.at(-1)!.value) : null,
+    count_new:
+      typeof s.currentSellerCount === "number"
+        ? Math.round(s.currentSellerCount)
+        : s.sellers.length > 0
+          ? Math.round(s.sellers.at(-1)!.value)
+          : null,
+    count_reviews:
+      typeof s.currentReviewCount === "number"
+        ? Math.round(s.currentReviewCount)
+        : s.reviewCount.length > 0
+          ? Math.round(s.reviewCount.at(-1)!.value)
+          : null,
+    rating_avg: typeof s.currentRating === "number" ? s.currentRating : null,
+    monthly_sold: typeof s.monthlySold === "number" && s.monthlySold > 0 ? s.monthlySold : null,
+    package_weight_g: typeof s.weightGrams === "number" ? s.weightGrams : null,
+    category_tree: s.category ? [{ name: s.category }] : null,
+    fetched_at: nowIso(),
+  };
+}
+
+/**
+ * snapshot + AsinMetrics から market_analysis を計算して upsert。
+ * AsinMetrics は keepaProductToMetrics で組み立てた骨格を渡す前提。
+ */
+async function computeAndPersistMarket(
+  asin: string,
+  metrics: AsinMetrics,
+  monthlySalesSource: MonthlySalesSource,
+): Promise<void> {
+  const structural = scoreAsin(metrics);
+  const profit = computeProfit(metrics);
+  const derived = deriveKeepaMetrics(metrics);
+  const gates = evaluateGates({ metrics, derived, profit });
+  const axes = deriveAxesFromBreakdown(structural.breakdown, {
+    estimatedMonthlySales: metrics.estimatedMonthlySales,
+    grossMarginRate: metrics.grossMarginRate,
+  });
+  const ms = computeMarketScore({ axes, gates });
+
+  const row: MarketAnalysisRow = {
+    asin,
+    axis_demand: axes.demand,
+    axis_competition: axes.competition,
+    axis_profit: axes.profit,
+    axis_stability: axes.stability,
+    axis_differentiation: axes.differentiation,
+    gates_passed: ms.gatesPassed,
+    gates_failed: ms.gatesFailed,
+    market_score: ms.score,
+    decision: ms.decision,
+    monthly_sales_source: monthlySalesSource,
+    computed_at: nowIso(),
+  };
+  await upsertMarketAnalysis(row);
+}
+
+// ─── ingestDiscover (新カテゴリ調査) ───────────────────────────────────
+
+export interface IngestDiscoverInput {
+  category?: string;       // category id or label。空ならカテゴリ全体を呼ばない
+  keyword?: string;        // 任意キーワード (Keepa /query の title)
+  minPrice?: number;       // JPY
+  maxPrice?: number;
+  minReviews?: number;
+  maxReviews?: number;
+  perPage?: number;        // default 100, max 200 (内部で 2 ページ取得)
+}
+
+export interface IngestDiscoverResult {
+  ingested: number;        // products + snapshot + market_analysis に書いた件数
+  asins: string[];
+  durationMs: number;
+}
+
+/**
+ * Keepa /query 1 コールで取得 → products / keepa_snapshot / market_analysis に永続化。
+ * tier は watchlist.status から派生 (未登録なら 3)。
+ * 詳細ページが触られた時点で初めて ingestFull が走る運用 (このフェーズでは history は取らない)。
+ */
+export async function ingestDiscover(
+  input: IngestDiscoverInput,
+): Promise<IngestDiscoverResult> {
+  const start = Date.now();
+  const limit = Math.min(Math.max(input.perPage ?? 100, 5), 200);
+  const appCategory = input.category
+    ? findCategory(input.category) ?? DEFAULT_CATEGORY
+    : DEFAULT_CATEGORY;
+  const keyword = input.keyword?.trim() || undefined;
+
+  const products = await findProductsByCategory({
+    rootCategory: appCategory.keepaRootCategory,
+    title: keyword,
+    minPriceJpy: input.minPrice,
+    maxPriceJpy: input.maxPrice,
+    minReviews: input.minReviews,
+    maxReviews: input.maxReviews,
+    limit,
+  });
+
+  if (products.length === 0) {
+    return { ingested: 0, asins: [], durationMs: Date.now() - start };
+  }
+
+  // /query が ASIN だけ返した場合は bulk /product (history=0) で 1 回 enrich
+  const needsEnrich = products.filter((p) => !p.title || !p.imageUrl).map((p) => p.asin);
+  let enriched: Map<string, KeepaProduct> = new Map();
+  if (needsEnrich.length > 0) {
+    try {
+      const got = await fetchKeepaProductsBatch(needsEnrich);
+      enriched = new Map(got.map((p) => [p.asin, p]));
+    } catch (err) {
+      console.warn("[apde:ingest:discover] enrich batch failed", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  const merged: KeepaProduct[] = products.map((p) => {
+    const more = enriched.get(p.asin);
+    if (!more) return p;
+    return {
+      ...p,
+      title: p.title ?? more.title,
+      brand: p.brand ?? more.brand,
+      imageUrl: p.imageUrl ?? more.imageUrl,
+      category: p.category ?? more.category,
+      weightGrams: p.weightGrams ?? more.weightGrams,
+      currentPrice: p.currentPrice ?? more.currentPrice,
+      currentSellerCount: p.currentSellerCount ?? more.currentSellerCount,
+      currentReviewCount: p.currentReviewCount ?? more.currentReviewCount,
+      currentRating: p.currentRating ?? more.currentRating,
+      currentBsr: p.currentBsr ?? more.currentBsr,
+      monthlySold: p.monthlySold ?? more.monthlySold,
+      isHazmat: p.isHazmat ?? more.isHazmat,
+    };
+  });
+
+  const ts = nowIso();
+  const asins: string[] = [];
+
+  // 直列ループ: 各 ASIN ごとに products → snapshot → market_analysis を順に書く
+  // (FK 制約のため products が先)
+  for (const p of merged) {
+    if (!p.asin) continue;
+    asins.push(p.asin);
+
+    await upsertProductMaster({
+      asin: p.asin,
+      title: p.title,
+      brand: p.brand,
+      category: p.category ?? appCategory.label,
+      image_url: p.imageUrl ?? null,
+      current_price: p.currentPrice,
+      review_count: p.currentReviewCount,
+      seller_count: p.currentSellerCount,
+      rating: p.currentRating ?? null,
+      weight_grams: p.weightGrams,
+    });
+
+    await upsertKeepaSnapshot(snapshotFromKeepaProduct(p));
+    await updateProductRefreshMeta({ asin: p.asin, diffAt: ts });
+    // Tier を watchlist から派生
+    await syncTierFromWatchlist(p.asin);
+
+    // market_analysis の計算 (skipLlm の Discovery と同じロジック)
+    const metrics = keepaProductToMetrics(p, appCategory.label);
+    const source: MonthlySalesSource = metrics.monthlySalesSource ?? "seed";
+    await computeAndPersistMarket(p.asin, metrics, source);
+  }
+
+  return { ingested: asins.length, asins, durationMs: Date.now() - start };
+}
+
+// ─── ingestFull (1 ASIN, history=1) ────────────────────────────────────
+
+export interface IngestFullResult {
+  asin: string;
+  pricePoints: number;
+  bsrPoints: number;
+  sellerPoints: number;
+}
+
+/**
+ * 1 ASIN を /product?history=1 で取り、 history を 4 つの履歴テーブルに展開する。
+ * 詳細ページ初訪 or keepa_last_full_at が 90 日以上経過したときに呼ぶ。
+ * 1 token / ASIN 消費 (history=1 含む)。
+ */
+export async function ingestFull(asin: string): Promise<IngestFullResult> {
+  const series = await fetchKeepaSeries(asin);
+
+  // products を保証 upsert (FK 制約)
+  await upsertProductMaster({
+    asin,
+    title: series.title,
+    brand: series.brand,
+    category: series.category,
+    image_url: series.imageUrl ?? null,
+    current_price: series.currentPrice,
+    review_count: series.currentReviewCount,
+    seller_count: series.currentSellerCount,
+    rating: series.currentRating ?? null,
+    weight_grams: series.weightGrams,
+  });
+
+  const ts = nowIso();
+  await upsertKeepaSnapshot(snapshotFromKeepaSeries(asin, series));
+  await updateProductRefreshMeta({ asin, diffAt: ts, fullAt: ts });
+  await syncTierFromWatchlist(asin);
+
+  // 履歴を normalize して insert
+  const priceRows: PriceHistoryRow[] = series.price.map((p) => ({
+    asin,
+    price_type: "new",
+    ts: p.timestamp,
+    price_yen: p.value > 0 ? Math.round(p.value) : null,
+  }));
+  const buyBoxRows: PriceHistoryRow[] = series.buyBox.map((p) => ({
+    asin,
+    price_type: "buybox",
+    ts: p.timestamp,
+    price_yen: p.value > 0 ? Math.round(p.value) : null,
+  }));
+  const bsrRows: BsrHistoryRow[] = series.bsr.map((p) => ({
+    asin,
+    ts: p.timestamp,
+    rank: p.value > 0 ? Math.round(p.value) : null,
+  }));
+  const sellerRows: SellerHistoryRow[] = series.sellers.map((p) => ({
+    asin,
+    ts: p.timestamp,
+    count_new: p.value >= 0 ? Math.round(p.value) : null,
+  }));
+
+  await Promise.all([
+    insertPriceHistory([...priceRows, ...buyBoxRows]),
+    insertBsrHistory(bsrRows),
+    insertSellerHistory(sellerRows),
+  ]);
+
+  // market_analysis 再計算 (history を活かして CV / drop rate を反映)
+  // AsinMetrics は KeepaSeries から組み立てる必要があるので、簡易マッピングで対応。
+  // ここでは createMockMetrics ベースに上書きし、 keepaProductToMetrics と整合させる。
+  const fakeProduct: KeepaProduct = {
+    asin,
+    title: series.title,
+    brand: series.brand,
+    category: series.category,
+    weightGrams: series.weightGrams,
+    monthlySold: series.monthlySold,
+    currentPrice: series.currentPrice,
+    currentSellerCount: series.currentSellerCount,
+    currentReviewCount: series.currentReviewCount,
+    currentRating: series.currentRating,
+    imageUrl: series.imageUrl,
+  };
+  const baseMetrics = keepaProductToMetrics(fakeProduct, series.category ?? "未分類");
+  baseMetrics.priceHistory = series.price;
+  baseMetrics.bsrHistory = series.bsr;
+  baseMetrics.sellerCountHistory = series.sellers;
+  baseMetrics.buyBoxHistory = series.buyBox;
+  await computeAndPersistMarket(
+    asin,
+    baseMetrics,
+    baseMetrics.monthlySalesSource ?? "seed",
+  );
+
+  return {
+    asin,
+    pricePoints: priceRows.length + buyBoxRows.length,
+    bsrPoints: bsrRows.length,
+    sellerPoints: sellerRows.length,
+  };
+}
+
+// ─── ingestDiff (1 ASIN, history=0) ────────────────────────────────────
+
+/**
+ * 1 ASIN を /product?history=0 で取り、 keepa_snapshot のみ更新する。
+ * Cron (Tier 1: 24h, Tier 2: 7d) と詳細ページの「最新値を取得」ボタンから呼ばれる。
+ * 1 token / ASIN 消費。
+ */
+export async function ingestDiff(asin: string): Promise<{ asin: string; updated: boolean }> {
+  const got = await fetchKeepaProductsBatch([asin]);
+  const p = got[0];
+  if (!p) return { asin, updated: false };
+
+  await upsertProductMaster({
+    asin: p.asin,
+    title: p.title,
+    brand: p.brand,
+    category: p.category,
+    image_url: p.imageUrl ?? null,
+    current_price: p.currentPrice,
+    review_count: p.currentReviewCount,
+    seller_count: p.currentSellerCount,
+    rating: p.currentRating ?? null,
+    weight_grams: p.weightGrams,
+  });
+
+  const ts = nowIso();
+  await upsertKeepaSnapshot(snapshotFromKeepaProduct(p));
+  await updateProductRefreshMeta({ asin: p.asin, diffAt: ts });
+  await syncTierFromWatchlist(p.asin);
+
+  // market_analysis 再計算
+  const metrics = keepaProductToMetrics(p, p.category ?? "未分類");
+  await computeAndPersistMarket(
+    p.asin,
+    metrics,
+    metrics.monthlySalesSource ?? "seed",
+  );
+
+  return { asin: p.asin, updated: true };
+}
+
+// ─── recomputeMarketAnalysis (DB-only) ─────────────────────────────────
+
+/**
+ * Keepa を呼ばず、 DB の keepa_snapshot から AsinMetrics を組み立て、
+ * market_analysis を再計算する。 weight 等の評価式を変えたあとに一括再計算するための関数。
+ */
+export async function recomputeMarketAnalysis(
+  asin: string,
+): Promise<{ asin: string; recomputed: boolean }> {
+  const snap = await getKeepaSnapshot(asin);
+  if (!snap) return { asin, recomputed: false };
+
+  // KeepaSnapshot → KeepaProduct 互換オブジェクト → AsinMetrics
+  const fakeProduct: KeepaProduct = {
+    asin,
+    title: undefined,
+    weightGrams: snap.package_weight_g ?? undefined,
+    monthlySold: snap.monthly_sold ?? undefined,
+    currentPrice: snap.current_new_yen ?? snap.current_amazon_yen ?? undefined,
+    currentSellerCount: snap.count_new ?? undefined,
+    currentReviewCount: snap.count_reviews ?? undefined,
+    currentRating: snap.rating_avg ?? undefined,
+    currentBsr: snap.bsr ?? undefined,
+  };
+  const categoryName = snap.category_tree?.[0]?.name ?? "未分類";
+  const metrics = keepaProductToMetrics(fakeProduct, categoryName);
+  await computeAndPersistMarket(asin, metrics, metrics.monthlySalesSource ?? "seed");
+  return { asin, recomputed: true };
+}

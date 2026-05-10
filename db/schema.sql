@@ -5,37 +5,93 @@ create extension if not exists "pgcrypto";
 
 -- 1) products: ASIN マスタ
 create table if not exists products (
-  asin            text primary key,
-  title           text not null,
-  category        text not null,
-  brand           text,
-  image_url       text,
-  current_price   numeric(10,2),
-  weight_grams    integer,
-  size_tier       text check (size_tier in ('SMALL_STANDARD','LARGE_STANDARD','OVERSIZE')),
-  review_count    integer not null default 0,
-  seller_count    integer not null default 0,
-  brand_strength  numeric(5,2),                -- 0-100, 上位3ブランド集中度
-  rating          numeric(3,2),
-  is_hazmat       boolean not null default false,
-  is_regulated    boolean not null default false,
-  updated_at      timestamptz not null default now()
+  asin                  text primary key,
+  title                 text not null,
+  category              text not null,
+  brand                 text,
+  image_url             text,
+  current_price         numeric(10,2),
+  weight_grams          integer,
+  size_tier             text check (size_tier in ('SMALL_STANDARD','LARGE_STANDARD','OVERSIZE')),
+  review_count          integer not null default 0,
+  seller_count          integer not null default 0,
+  brand_strength        numeric(5,2),                -- 0-100, 上位3ブランド集中度
+  rating                numeric(3,2),
+  is_hazmat             boolean not null default false,
+  is_regulated          boolean not null default false,
+  -- Phase 1 (R1) で追加: refresh 管理 + Tier
+  keepa_last_full_at    timestamptz,                 -- /product?history=1 の最終取得 (90d cycle)
+  keepa_last_diff_at    timestamptz,                 -- /product?history=0 の最終取得 (24h/7d cycle)
+  tier                  smallint not null default 3 check (tier in (1,2,3)),
+  updated_at            timestamptz not null default now()
 );
 create index if not exists idx_products_category on products (category);
 create index if not exists idx_products_updated_at on products (updated_at desc);
+create index if not exists idx_products_tier on products (tier);
+create index if not exists idx_products_last_diff on products (keepa_last_diff_at);
 
--- 2) keepa_data: 時系列 + 派生指標
-create table if not exists keepa_data (
-  asin              text primary key references products(asin) on delete cascade,
-  price_history     jsonb not null default '[]'::jsonb,
-  bsr_history       jsonb not null default '[]'::jsonb,
-  seller_history    jsonb not null default '[]'::jsonb,
-  buy_box_history   jsonb not null default '[]'::jsonb,
-  derived_metrics   jsonb not null default '{}'::jsonb,
-  source            text not null default 'keepa',
-  updated_at        timestamptz not null default now()
+-- 2) price_history: 価格時系列 (Amazon/New/Used/BuyBox を 1 テーブル)
+create table if not exists price_history (
+  asin        text not null references products(asin) on delete cascade,
+  price_type  text not null check (price_type in ('amazon','new','used','buybox')),
+  ts          timestamptz not null,
+  price_yen   integer,                            -- NULL = 在庫なし
+  primary key (asin, price_type, ts)
 );
-create index if not exists idx_keepa_updated_at on keepa_data (updated_at desc);
+create index if not exists idx_price_history_asin_ts on price_history (asin, ts desc);
+
+-- 2b) bsr_history: BSR 時系列
+create table if not exists bsr_history (
+  asin   text not null references products(asin) on delete cascade,
+  ts     timestamptz not null,
+  rank   integer,
+  primary key (asin, ts)
+);
+create index if not exists idx_bsr_history_asin_ts on bsr_history (asin, ts desc);
+
+-- 2c) seller_history: 出品者数時系列
+create table if not exists seller_history (
+  asin       text not null references products(asin) on delete cascade,
+  ts         timestamptz not null,
+  count_new  integer,
+  primary key (asin, ts)
+);
+create index if not exists idx_seller_history_asin_ts on seller_history (asin, ts desc);
+
+-- 2d) keepa_snapshot: 最新スナップショット (latest only, fast read)
+create table if not exists keepa_snapshot (
+  asin                  text primary key references products(asin) on delete cascade,
+  current_amazon_yen    integer,
+  current_new_yen       integer,
+  buy_box_yen           integer,
+  bsr                   integer,
+  count_new             integer,
+  count_reviews         integer,
+  rating_avg            numeric(3,2),
+  monthly_sold          integer,                  -- Keepa 実測 (NULL なら BSR 推定)
+  package_weight_g      integer,
+  category_tree         jsonb,
+  fetched_at            timestamptz not null default now()
+);
+create index if not exists idx_keepa_snapshot_fetched_at on keepa_snapshot (fetched_at desc);
+
+-- 2e) market_analysis: 5 軸 + ゲート + 複合 score の pre-compute (探索の駆動元)
+create table if not exists market_analysis (
+  asin                    text primary key references products(asin) on delete cascade,
+  axis_demand             integer,                -- 0-100
+  axis_competition        integer,
+  axis_profit             integer,
+  axis_stability          integer,
+  axis_differentiation    integer,
+  gates_passed            integer,                -- 0-8
+  gates_failed            jsonb not null default '[]'::jsonb,
+  market_score            numeric(5,2),
+  decision                text check (decision in ('go','cond','no_go')),
+  monthly_sales_source    text check (monthly_sales_source in ('keepa','bsr','seed')),
+  computed_at             timestamptz not null default now()
+);
+create index if not exists idx_market_score on market_analysis (market_score desc);
+create index if not exists idx_market_analysis_decision on market_analysis (decision);
 
 -- 3) analysis: 5軸スコア + ゲート結果 + 利益性 + LLM。履歴保持 (上書き禁止)。
 create table if not exists analysis (
@@ -151,10 +207,6 @@ $$ language plpgsql;
 
 drop trigger if exists products_updated_at on products;
 create trigger products_updated_at before update on products
-  for each row execute function set_updated_at();
-
-drop trigger if exists keepa_data_updated_at on keepa_data;
-create trigger keepa_data_updated_at before update on keepa_data
   for each row execute function set_updated_at();
 
 drop trigger if exists app_settings_updated_at on app_settings;

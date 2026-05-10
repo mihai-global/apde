@@ -377,5 +377,77 @@ export interface KeepaDataRow {
   updated_at: string;
 }
 
+// ─── Phase 1 (R1) で追加: 新スキーマと 1:1 ────────────────────────────
+
+/** 商品の refresh 階層。 watchlist.status から自動派生する。 */
+export type Tier = 1 | 2 | 3;
+
+export type PriceType = "amazon" | "new" | "used" | "buybox";
+
+export interface PriceHistoryRow {
+  asin: string;
+  price_type: PriceType;
+  ts: string;
+  price_yen: number | null;
+}
+
+export interface BsrHistoryRow {
+  asin: string;
+  ts: string;
+  rank: number | null;
+}
+
+export interface SellerHistoryRow {
+  asin: string;
+  ts: string;
+  count_new: number | null;
+}
+
+/** keepa_snapshot: ASIN ごとの最新値スナップショット (履歴は別テーブル)。 */
+export interface KeepaSnapshotRow {
+  asin: string;
+  current_amazon_yen: number | null;
+  current_new_yen: number | null;
+  buy_box_yen: number | null;
+  bsr: number | null;
+  count_new: number | null;
+  count_reviews: number | null;
+  rating_avg: number | null;
+  monthly_sold: number | null;
+  package_weight_g: number | null;
+  category_tree: Array<{ name?: string }> | null;
+  fetched_at: string;
+}
+
+/** market_analysis: 5 軸 + ゲート + 複合 score の pre-compute 結果。 */
+export type MarketDecision = "go" | "cond" | "no_go";
+
+export interface MarketAnalysisRow {
+  asin: string;
+  axis_demand: number | null;
+  axis_competition: number | null;
+  axis_profit: number | null;
+  axis_stability: number | null;
+  axis_differentiation: number | null;
+  gates_passed: number | null;
+  gates_failed: string[];
+  market_score: number | null;
+  decision: MarketDecision | null;
+  monthly_sales_source: MonthlySalesSource | null;
+  computed_at: string;
+}
+
+/**
+ * watchlist.status → Tier の派生ロジック (R1 で確定)。
+ *   sourcing/live → 1 (24h refresh)
+ *   candidate     → 2 (7d refresh)
+ *   その他/未登録 → 3 (オンデマンド)
+ */
+export function deriveTierFromStatus(status: WatchlistStatus | null | undefined): Tier {
+  if (status === "sourcing" || status === "live") return 1;
+  if (status === "candidate") return 2;
+  return 3;
+}
+
 // 互換性 (旧 API レスポンスを構築するための部分型)
 export type AnalysisInput = Omit<AnalysisResult, "insight" | "source" | "analyzedAt" | "expiresAt" | "profit" | "derived" | "gates">;

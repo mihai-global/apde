@@ -5,9 +5,14 @@ import type {
   AnalysisThreadRow,
   ApiUsageRow,
   AppSettingRow,
+  BsrHistoryRow,
   DictionaryRow,
   DiscoveryRunRow,
+  KeepaSnapshotRow,
+  MarketAnalysisRow,
+  PriceHistoryRow,
   PurchaseFeedbackRow,
+  SellerHistoryRow,
   WatchlistRow,
 } from "@/lib/types";
 
@@ -46,6 +51,13 @@ export interface MockStoreState {
   appSettings: Map<string, AppSettingRow>;
   threads: AnalysisThreadRow[];
   feedback: Map<string, PurchaseFeedbackRow>;
+  // R1 で追加
+  keepaSnapshot: Map<string, KeepaSnapshotRow>;
+  marketAnalysis: Map<string, MarketAnalysisRow>;
+  priceHistory: PriceHistoryRow[];
+  bsrHistory: BsrHistoryRow[];
+  sellerHistory: SellerHistoryRow[];
+  productMeta: Map<string, { keepa_last_full_at: string | null; keepa_last_diff_at: string | null; tier: 1 | 2 | 3 }>;
 }
 
 declare global {
@@ -205,6 +217,12 @@ export function getMockStore(): MockStoreState {
       appSettings: seedAppSettings(),
       threads: [],
       feedback: new Map(),
+      keepaSnapshot: new Map(),
+      marketAnalysis: new Map(),
+      priceHistory: [],
+      bsrHistory: [],
+      sellerHistory: [],
+      productMeta: new Map(),
     };
   }
   return globalThis.__apdeMockStore;

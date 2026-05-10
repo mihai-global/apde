@@ -1,0 +1,43 @@
+name: Keepa Refresh
+
+# Tier 別 Keepa リフレッシュを毎時実行する。 GitHub Actions の無料枠 (2000 min/月) で十分まかなえる。
+# /api/cron/refresh は budget = min(tokensLeft - 10, 50) の中で動くので、 token 枯渇時は no-op。
+#
+# 必要な Secrets (リポジトリの Settings → Secrets and variables → Actions に設定):
+#   APDE_BASE_URL: 例 https://apde.vercel.app
+#   CRON_SECRET  : Vercel 側の env.CRON_SECRET と同じ値
+#
+# workflow_dispatch を有効にしてあるので、手動でも 実行可能 (Actions タブ → Run workflow)。
+
+on:
+  schedule:
+    - cron: "0 * * * *" # 毎時 0 分
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.APDE_BASE_URL }}" ] || [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "::error::APDE_BASE_URL or CRON_SECRET not set"
+            exit 1
+          fi
+      - name: Hit /api/cron/refresh
+        env:
+          BASE_URL: ${{ secrets.APDE_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          # -f: HTTP error を non-zero exit に変換  -sS: silent + show errors
+          # 出力は GitHub Actions のログに残る (ASIN ごとの skipped 等)
+          curl -fsS -X POST "$BASE_URL/api/cron/refresh" \
+            -H "x-cron-secret: $CRON_SECRET" \
+            -H "content-type: application/json" \
+            --max-time 90 | tee response.json
+          echo
+          echo "::group::Summary"
+          jq -r '"tier1: \(.tier1.processed) processed, tier2: \(.tier2.processed) processed, tokens: \(.tokensBefore) → \(.tokensAfter)"' response.json
+          echo "::endgroup::"
