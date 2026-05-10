@@ -27,6 +27,7 @@ import {
   insertBsrHistory,
   insertPriceHistory,
   insertSellerHistory,
+  listProductSummaries,
   syncTierFromWatchlist,
   updateProductRefreshMeta,
   upsertKeepaSnapshot,
@@ -391,19 +392,29 @@ export async function ingestDiff(asin: string): Promise<{ asin: string; updated:
 // ─── recomputeMarketAnalysis (DB-only) ─────────────────────────────────
 
 /**
- * Keepa を呼ばず、 DB の keepa_snapshot から AsinMetrics を組み立て、
+ * Keepa を呼ばず、 DB の keepa_snapshot + products から AsinMetrics を組み立て、
  * market_analysis を再計算する。 weight 等の評価式を変えたあとに一括再計算するための関数。
+ *
+ * 重要: snapshot 単体だと brand / title が無く applyBrandPolicy が効かない。
+ * products テーブルから brand / title / category / image_url を補完する。
  */
 export async function recomputeMarketAnalysis(
   asin: string,
 ): Promise<{ asin: string; recomputed: boolean }> {
-  const snap = await getKeepaSnapshot(asin);
+  const [snap, productList] = await Promise.all([
+    getKeepaSnapshot(asin),
+    listProductSummaries([asin]),
+  ]);
   if (!snap) return { asin, recomputed: false };
+  const product = productList[0];
 
-  // KeepaSnapshot → KeepaProduct 互換オブジェクト → AsinMetrics
+  // KeepaSnapshot + products → KeepaProduct 互換オブジェクト → AsinMetrics
   const fakeProduct: KeepaProduct = {
     asin,
-    title: undefined,
+    title: product?.title,
+    brand: product?.brand,
+    imageUrl: product?.imageUrl,
+    category: product?.category ?? snap.category_tree?.[0]?.name,
     weightGrams: snap.package_weight_g ?? undefined,
     monthlySold: snap.monthly_sold ?? undefined,
     currentPrice: snap.current_new_yen ?? snap.current_amazon_yen ?? undefined,
@@ -412,7 +423,7 @@ export async function recomputeMarketAnalysis(
     currentRating: snap.rating_avg ?? undefined,
     currentBsr: snap.bsr ?? undefined,
   };
-  const categoryName = snap.category_tree?.[0]?.name ?? "未分類";
+  const categoryName = product?.category ?? snap.category_tree?.[0]?.name ?? "未分類";
   const metrics = keepaProductToMetrics(fakeProduct, categoryName);
   await computeAndPersistMarket(asin, metrics, metrics.monthlySalesSource ?? "seed");
   return { asin, recomputed: true };
