@@ -279,6 +279,11 @@ const ARRAY_INDEX_QUERY = ARRAY_INDEX; // alias
  * Keepa Product Finder で商品を一括取得。
  * 1 コール 5〜10 トークンで最大 100 件 (perPage=100)。 200 件まで欲しい場合は page=1 を追加で呼ぶ。
  */
+// Keepa /query の perPage は API 側で最小値が課されている (実測 50 以下は 400 で拒否)。
+// そのため targetLimit が小さくても perPage は MIN 以上を投げ、結果を後段で slice する。
+const KEEPA_QUERY_MIN_PER_PAGE = 50;
+const KEEPA_QUERY_MAX_PER_PAGE = 100;
+
 export async function findProductsByCategory(input: FindProductsInput): Promise<KeepaProduct[]> {
   if (!env.keepa.configured) throw new Error("Keepa API key not configured");
   const targetLimit = Math.min(Math.max(input.limit ?? 100, 1), 200);
@@ -286,7 +291,10 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
   const collected: KeepaProduct[] = [];
   for (let page = 0; page < 2 && collected.length < targetLimit; page += 1) {
     const remaining = targetLimit - collected.length;
-    const perPage = Math.min(remaining, 100);
+    const perPage = Math.max(
+      KEEPA_QUERY_MIN_PER_PAGE,
+      Math.min(remaining, KEEPA_QUERY_MAX_PER_PAGE),
+    );
     const selection: Record<string, unknown> = {
       rootCategory: input.rootCategory,
       productType: [0],
