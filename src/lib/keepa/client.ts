@@ -306,30 +306,46 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
     if (typeof input.maxReviews === "number") selection.current_COUNT_REVIEWS_lte = input.maxReviews;
     if (input.title && input.title.trim().length > 0) selection.title = input.title.trim();
 
-    const url = `${BASE_URL}/query?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}`;
+    // Keepa /query は GET + selection (URL-encoded JSON) が公式形式。 POST も受けるが
+    // domain= はクエリ側、selection= はクエリ側に置く必要がある。
+    const selectionParam = encodeURIComponent(JSON.stringify(selection));
+    const url = `${BASE_URL}/query?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&selection=${selectionParam}`;
     const start = Date.now();
-    const res = await fetchWithRetry(url, 3, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(selection),
-    });
+    const res = await fetchWithRetry(url, 3);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Keepa /query returned ${res.status}: ${body.slice(0, 200)}`);
     }
-    const data: KeepaQueryResponse = await res.json();
+    const data: KeepaQueryResponse & {
+      asinList?: string[];
+      error?: { message?: string };
+    } = await res.json();
     void usage.keepa("/query", data.tokensConsumed ?? 5);
     const products = Array.isArray(data.products) ? data.products : [];
+    const asinList = Array.isArray(data.asinList) ? data.asinList : [];
     console.info("[apde:keepa:query]", {
       rootCategory: input.rootCategory,
       title: input.title ?? null,
       page,
       productsCount: products.length,
+      asinListCount: asinList.length,
       tokensConsumed: data.tokensConsumed,
       tokensLeft: data.tokensLeft,
       totalResults: data.totalResults,
+      error: data.error?.message,
       durationMs: Date.now() - start,
     });
+
+    // products が空でも asinList が返ってくる場合がある (selection.outputAsin が無視された場合)
+    // その場合は asin だけの軽量 KeepaProduct を生成 (詳細は detail で fetch)
+    if (products.length === 0 && asinList.length > 0) {
+      for (const asin of asinList) {
+        if (typeof asin !== "string" || asin.length === 0) continue;
+        collected.push({ asin });
+      }
+      if (collected.length >= targetLimit) break;
+      continue;
+    }
 
     for (const p of products) {
       if (typeof p.asin !== "string" || p.asin.length === 0) continue;

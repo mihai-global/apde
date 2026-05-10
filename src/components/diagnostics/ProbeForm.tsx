@@ -29,6 +29,24 @@ interface ModelsListResult {
   error?: string;
 }
 
+interface QueryProbeResult {
+  ok?: boolean;
+  status?: number;
+  url?: string;
+  durationMs?: number;
+  responseKeys?: string[];
+  productsCount?: number;
+  asinListCount?: number;
+  totalResults?: number;
+  sampleAsins?: string[];
+  sampleTitles?: string[];
+  tokensConsumed?: number;
+  tokensLeft?: number;
+  errorMessage?: string;
+  rawHead?: string;
+  selectionJson?: string;
+}
+
 interface SearchProbeResult {
   ok?: boolean;
   status?: number;
@@ -51,6 +69,8 @@ export function ProbeForm() {
   const [error, setError] = useState<string | null>(null);
   const [models, setModels] = useState<ModelsListResult | null>(null);
   const [searchProbe, setSearchProbe] = useState<SearchProbeResult | null>(null);
+  const [queryProbe, setQueryProbe] = useState<QueryProbeResult | null>(null);
+  const [queryCategory, setQueryCategory] = useState("home-kitchen");
   const [pending, startTransition] = useTransition();
 
   function runProbe() {
@@ -105,6 +125,28 @@ export function ProbeForm() {
     });
   }
 
+  function runQueryProbe() {
+    setError(null);
+    setQueryProbe(null);
+    startTransition(async () => {
+      try {
+        const params = new URLSearchParams({
+          category: queryCategory,
+          minPrice: "3000",
+          maxPrice: "8000",
+        });
+        if (searchTerm.trim()) params.set("title", searchTerm.trim());
+        const res = await fetch(`/api/diagnostics/query-probe?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const data = (await res.json()) as QueryProbeResult;
+        setQueryProbe(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  }
+
   return (
     <div>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
@@ -132,18 +174,119 @@ export function ProbeForm() {
           className="input"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="デスク 整理"
+          placeholder="デスク 整理 (任意・空欄でカテゴリ全体)"
           style={{ maxWidth: 280 }}
         />
+        <select
+          className="select"
+          value={queryCategory}
+          onChange={(e) => setQueryCategory(e.target.value)}
+          style={{ maxWidth: 220 }}
+        >
+          <option value="home-kitchen">ホーム&キッチン</option>
+          <option value="office-stationery">文房具・オフィス用品</option>
+          <option value="electronics">家電&カメラ</option>
+          <option value="pet-supplies">ペット用品</option>
+          <option value="sports-outdoors">スポーツ&アウトドア</option>
+          <option value="beauty">ビューティー</option>
+          <option value="health-personal-care">ヘルス&ビューティ</option>
+          <option value="diy-tools">DIY・工具・ガーデン</option>
+          <option value="fashion">服&ファッション小物</option>
+          <option value="baby">ベビー&マタニティ</option>
+          <option value="hobby">ホビー</option>
+          <option value="toys">おもちゃ</option>
+        </select>
+        <button
+          type="button"
+          className="pill solid"
+          onClick={runQueryProbe}
+          disabled={pending}
+        >
+          {pending ? "Query…" : "Keepa /query Probe"} <span className="arrow">›</span>
+        </button>
         <button
           type="button"
           className="pill"
           onClick={runSearchProbe}
           disabled={pending || !searchTerm.trim()}
         >
-          {pending ? "Search…" : "Keepa Search Probe"} <span className="arrow">›</span>
+          {pending ? "Search…" : "Keepa /search Probe"} <span className="arrow">›</span>
         </button>
       </div>
+
+      {queryProbe ? (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 16,
+            border: "1px solid var(--border-1)",
+            borderColor: queryProbe.ok ? "var(--decision-go)" : "var(--decision-no)",
+            fontSize: 12,
+            lineHeight: 1.7,
+          }}
+        >
+          <div className="eyebrow" style={{ marginBottom: 8 }}>
+            Keepa /query 生レスポンス
+          </div>
+          <div>
+            <strong>Status:</strong> {queryProbe.status ?? "—"} ({queryProbe.durationMs} ms)
+          </div>
+          {queryProbe.errorMessage ? (
+            <div style={{ color: "var(--decision-no)" }}>
+              <strong>Error:</strong> {queryProbe.errorMessage}
+            </div>
+          ) : null}
+          <div>
+            <strong>Response keys:</strong>{" "}
+            <span className="mono">{queryProbe.responseKeys?.join(", ") ?? "—"}</span>
+          </div>
+          <div>
+            <strong>products[]:</strong> {queryProbe.productsCount ?? "—"} 件 ·{" "}
+            <strong>asinList[]:</strong> {queryProbe.asinListCount ?? "—"} 件 ·{" "}
+            <strong>totalResults:</strong> {queryProbe.totalResults ?? "—"}
+          </div>
+          {queryProbe.sampleAsins && queryProbe.sampleAsins.length > 0 ? (
+            <div>
+              <strong>Sample ASINs:</strong>{" "}
+              <span className="mono">{queryProbe.sampleAsins.join(", ")}</span>
+            </div>
+          ) : null}
+          {queryProbe.sampleTitles && queryProbe.sampleTitles.length > 0 ? (
+            <div>
+              <strong>Sample titles:</strong>
+              <ul style={{ margin: "4px 0", paddingLeft: 18 }}>
+                {queryProbe.sampleTitles.map((t, i) => (
+                  <li key={i}>{t}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <div>
+            <strong>Tokens:</strong> 消費 {queryProbe.tokensConsumed ?? "—"} / 残{" "}
+            {queryProbe.tokensLeft ?? "—"}
+          </div>
+          {queryProbe.selectionJson ? (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", color: "var(--fg-3)" }}>
+                送信した selection JSON
+              </summary>
+              <pre className="mono" style={{ marginTop: 8, padding: 8, background: "var(--bg-3)", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                {queryProbe.selectionJson}
+              </pre>
+            </details>
+          ) : null}
+          {queryProbe.rawHead ? (
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: "pointer", color: "var(--fg-3)" }}>
+                raw response (head 800 chars)
+              </summary>
+              <pre className="mono" style={{ marginTop: 8, padding: 8, background: "var(--bg-3)", fontSize: 11, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                {queryProbe.rawHead}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
 
       {searchProbe ? (
         <div
