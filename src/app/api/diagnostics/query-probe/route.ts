@@ -46,8 +46,6 @@ export async function GET(request: Request): Promise<Response> {
     perPage: 50,
     page: 0,
     sort: [["current_REVIEWS", "desc"]],
-    current_AMAZON_gte: minPrice * 100,
-    current_AMAZON_lte: maxPrice * 100,
     current_NEW_gte: minPrice * 100,
     current_NEW_lte: maxPrice * 100,
   };

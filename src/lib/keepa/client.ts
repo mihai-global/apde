@@ -294,13 +294,13 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
       page,
       sort: [["current_REVIEWS", "desc"]],
     };
-    // 価格は cents (×100)
+    // 価格は cents (×100)。 current_AMAZON は Amazon 自身が出品者のときのみ有効で、
+    // JP の多くの商品は 3rd-party のみ (current_NEW のみ有効) のため、 current_NEW
+    // だけで絞り込む。 current_AMAZON にも条件を入れると AND で大半が落ちて 0 件に。
     if (typeof input.minPriceJpy === "number") {
-      selection.current_AMAZON_gte = input.minPriceJpy * 100;
       selection.current_NEW_gte = input.minPriceJpy * 100;
     }
     if (typeof input.maxPriceJpy === "number") {
-      selection.current_AMAZON_lte = input.maxPriceJpy * 100;
       selection.current_NEW_lte = input.maxPriceJpy * 100;
     }
     if (typeof input.minReviews === "number") selection.current_COUNT_REVIEWS_gte = input.minReviews;
