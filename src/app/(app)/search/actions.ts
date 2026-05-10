@@ -47,6 +47,9 @@ export interface RunIngestDiscoverResult {
   asins: string[];
   durationMs: number;
   error?: string;
+  /** Keepa token 残量不足で実行を拒否したときのメッセージ */
+  refusedReason?: string;
+  tokensLeft?: number;
 }
 
 /**
@@ -61,10 +64,13 @@ export async function runIngestDiscover(
     const result = await ingestDiscover(input);
     revalidatePath("/search");
     return {
-      ok: true,
+      ok: !result.refusedReason,
       ingested: result.ingested,
       asins: result.asins,
       durationMs: result.durationMs,
+      refusedReason: result.refusedReason,
+      tokensLeft: result.tokensLeft,
+      error: result.refusedReason,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

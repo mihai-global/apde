@@ -319,10 +319,10 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
 
     // Keepa /query は GET + selection (URL-encoded JSON) が公式形式。 POST も受けるが
     // domain= はクエリ側、selection= はクエリ側に置く必要がある。
-    // images=1 で imagesCSV をレスポンスに含める (一括 1 token 程度の追加コスト)
-    // → 後段の bulk /product enrichment (100 ASIN × 1 token = 100 token) を回避できる。
+    // images=1 やオプション系は加算課金されるので最小構成にとどめる (画像は無くても
+    // placeholder で表示できるので 1 ingest あたりのコストを優先)。
     const selectionParam = encodeURIComponent(JSON.stringify(selection));
-    const url = `${BASE_URL}/query?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&selection=${selectionParam}&images=1`;
+    const url = `${BASE_URL}/query?key=${encodeURIComponent(env.keepa.apiKey)}&domain=${env.keepa.domain}&selection=${selectionParam}`;
     const start = Date.now();
     const res = await fetchWithRetry(url, 3);
     if (!res.ok) {

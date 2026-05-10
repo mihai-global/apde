@@ -31,7 +31,7 @@ export function CategoryDiscoverModal({
   const [priceMax, setPriceMax] = useState(8000);
   const [reviewMin, setReviewMin] = useState(30);
   const [reviewMax, setReviewMax] = useState(500);
-  const [perPage, setPerPage] = useState(100);
+  const [perPage, setPerPage] = useState(50);
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
@@ -97,8 +97,9 @@ export function CategoryDiscoverModal({
           </button>
         </div>
         <p className="muted" style={{ fontSize: 13, marginBottom: 24, lineHeight: 1.7 }}>
-          Keepa /query を 1 コール (10 token / ¥15) 投げて 100 件まで一括取得します。
+          Keepa /query を 1 コール (約 5-10 token) 投げて指定件数を一括取得します。
           結果は DB に永続化され、以後の探索では Keepa を再呼び出ししません。
+          開始前に Keepa /token で残量を確認し、 -10 以下なら拒否します (過剰使用防止)。
         </p>
 
         <div className="form-grid" style={{ marginBottom: 24 }}>
@@ -130,7 +131,7 @@ export function CategoryDiscoverModal({
               onChange={(e) => setPerPage(Number(e.target.value))}
             />
             <div className="muted" style={{ fontSize: 11, marginTop: 6 }}>
-              既定 100 / 最大 200
+              既定 50 / 最大 200 (Keepa /query は最低 50)
             </div>
           </div>
           <div>

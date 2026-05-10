@@ -14,6 +14,7 @@ import { evaluateGates } from "@/lib/gates";
 import {
   fetchKeepaProductsBatch,
   fetchKeepaSeries,
+  fetchKeepaTokenStatus,
   findProductsByCategory,
   type KeepaProduct,
   type KeepaSeries,
@@ -140,14 +141,24 @@ export interface IngestDiscoverInput {
   maxPrice?: number;
   minReviews?: number;
   maxReviews?: number;
-  perPage?: number;        // default 100, max 200 (内部で 2 ページ取得)
+  perPage?: number;        // default 50, max 200 (内部で 2 ページ取得)
+  /** 旧仕様の bulk /product enrichment を有効にする。 1 ASIN ≈ 1 token 課金されるため
+   * デフォルト false。 title 未取得などで明示的に有効化する場合のみ true に。 */
+  enrich?: boolean;
 }
 
 export interface IngestDiscoverResult {
   ingested: number;        // products + snapshot + market_analysis に書いた件数
   asins: string[];
   durationMs: number;
+  /** Keepa token がマイナスで実行を拒否した場合の理由 */
+  refusedReason?: string;
+  tokensLeft?: number;
 }
+
+/** Keepa が過剰請求しないように、 ingestDiscover 開始時にこの値より tokensLeft が
+ * 少ない場合は実行を拒否する。 -10 まで許容するのは /token 取得自体の誤差吸収。 */
+const TOKEN_REFUSAL_THRESHOLD = -10;
 
 /**
  * Keepa /query 1 コールで取得 → products / keepa_snapshot / market_analysis に永続化。
@@ -158,11 +169,36 @@ export async function ingestDiscover(
   input: IngestDiscoverInput,
 ): Promise<IngestDiscoverResult> {
   const start = Date.now();
-  const limit = Math.min(Math.max(input.perPage ?? 100, 5), 200);
+  const limit = Math.min(Math.max(input.perPage ?? 50, 5), 200);
   const appCategory = input.category
     ? findCategory(input.category) ?? DEFAULT_CATEGORY
     : DEFAULT_CATEGORY;
   const keyword = input.keyword?.trim() || undefined;
+
+  // 開始前に Keepa /token で残量を確認 (これ自体は 0 token 課金)。
+  // 残量が深く負なら、 ingest 中にさらに使い込むのを防ぐためここで断る。
+  let tokensLeft: number | undefined;
+  try {
+    const status = await fetchKeepaTokenStatus();
+    tokensLeft = status.tokensLeft;
+    if (status.tokensLeft < TOKEN_REFUSAL_THRESHOLD) {
+      const refillMin = Math.ceil(
+        (TOKEN_REFUSAL_THRESHOLD - status.tokensLeft) / Math.max(status.refillRate, 1),
+      );
+      return {
+        ingested: 0,
+        asins: [],
+        durationMs: Date.now() - start,
+        tokensLeft: status.tokensLeft,
+        refusedReason: `Keepa tokensLeft=${status.tokensLeft} (要求: ≥ ${TOKEN_REFUSAL_THRESHOLD})。 復帰まで約 ${refillMin} 分。 待ってから再実行してください。`,
+      };
+    }
+  } catch (err) {
+    // /token 失敗時は続行 (token なしで /query を投げて 429 になる可能性あり)
+    console.warn("[apde:ingest:discover] /token check failed, proceeding", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   const products = await findProductsByCategory({
     rootCategory: appCategory.keepaRootCategory,
@@ -175,22 +211,24 @@ export async function ingestDiscover(
   });
 
   if (products.length === 0) {
-    return { ingested: 0, asins: [], durationMs: Date.now() - start };
+    return { ingested: 0, asins: [], durationMs: Date.now() - start, tokensLeft };
   }
 
-  // /query が ASIN だけ返した場合は bulk /product (history=0) で enrich。
-  // ただし enrich は 1 ASIN ≈ 1 token 課金されるので、 title が空のものに限定する
-  // (画像は /query?&images=1 で取得済みのはず)。
-  const needsEnrich = products.filter((p) => !p.title).map((p) => p.asin);
+  // /query が ASIN だけ返した場合の bulk /product (history=0) enrichment。
+  // 1 ASIN ≈ 1 token 課金されるので、 input.enrich === true のときだけ実行する。
+  // 通常は title だけでも DB 表示には十分なため、 default skip。
   let enriched: Map<string, KeepaProduct> = new Map();
-  if (needsEnrich.length > 0) {
-    try {
-      const got = await fetchKeepaProductsBatch(needsEnrich);
-      enriched = new Map(got.map((p) => [p.asin, p]));
-    } catch (err) {
-      console.warn("[apde:ingest:discover] enrich batch failed", {
-        message: err instanceof Error ? err.message : String(err),
-      });
+  if (input.enrich) {
+    const needsEnrich = products.filter((p) => !p.title).map((p) => p.asin);
+    if (needsEnrich.length > 0) {
+      try {
+        const got = await fetchKeepaProductsBatch(needsEnrich);
+        enriched = new Map(got.map((p) => [p.asin, p]));
+      } catch (err) {
+        console.warn("[apde:ingest:discover] enrich batch failed", {
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
   const merged: KeepaProduct[] = products.map((p) => {
@@ -256,7 +294,7 @@ export async function ingestDiscover(
     );
   }
 
-  return { ingested: asins.length, asins, durationMs: Date.now() - start };
+  return { ingested: asins.length, asins, durationMs: Date.now() - start, tokensLeft };
 }
 
 // ─── ingestFull (1 ASIN, history=1) ────────────────────────────────────
