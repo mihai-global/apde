@@ -43,18 +43,29 @@ export interface IngestActionResult {
   pricePoints?: number;
   bsrPoints?: number;
   sellerPoints?: number;
+  refusedReason?: string;
+  tokensLeft?: number;
 }
 
 /** R5: 詳細ページ「履歴を更新」ボタン → /product?history=1 (1 token) */
 export async function runIngestFull(asin: string): Promise<IngestActionResult> {
   try {
     const r = await ingestFull(asin);
+    if (r.refusedReason) {
+      return {
+        ok: false,
+        error: r.refusedReason,
+        refusedReason: r.refusedReason,
+        tokensLeft: r.tokensLeft,
+      };
+    }
     revalidatePath(`/products/${asin}`);
     return {
       ok: true,
       pricePoints: r.pricePoints,
       bsrPoints: r.bsrPoints,
       sellerPoints: r.sellerPoints,
+      tokensLeft: r.tokensLeft,
     };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -64,9 +75,17 @@ export async function runIngestFull(asin: string): Promise<IngestActionResult> {
 /** R5: 詳細ページ「最新値を取得」ボタン → /product?history=0 (1 token) */
 export async function runIngestDiff(asin: string): Promise<IngestActionResult> {
   try {
-    await ingestDiff(asin);
+    const r = await ingestDiff(asin);
+    if (r.refusedReason) {
+      return {
+        ok: false,
+        error: r.refusedReason,
+        refusedReason: r.refusedReason,
+        tokensLeft: r.tokensLeft,
+      };
+    }
     revalidatePath(`/products/${asin}`);
-    return { ok: true };
+    return { ok: true, tokensLeft: r.tokensLeft };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

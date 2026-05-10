@@ -11,6 +11,7 @@ import { env, mockMode } from "@/lib/env";
 import {
   getAppSetting,
   getDashboardKpis,
+  getMarketDistribution,
   listApiUsageThisMonth,
   listDiscoveryRuns,
   listProductSummaries,
@@ -96,13 +97,14 @@ function buildBudget(usage: Awaited<ReturnType<typeof listApiUsageThisMonth>>, b
 }
 
 export default async function DashboardPage() {
-  const [watchlist, runs, usage, settingBudget, kpis, displayName] = await Promise.all([
+  const [watchlist, runs, usage, settingBudget, kpis, displayName, marketDist] = await Promise.all([
     listWatchlist(),
     listDiscoveryRuns(3),
     listApiUsageThisMonth(),
     getAppSetting<number>("cost_budget_jpy"),
     getDashboardKpis(),
     loadDisplayName(),
+    getMarketDistribution(),
   ]);
   const productMap = new Map(
     (await listProductSummaries(watchlist.map((w) => w.asin))).map((p) => [p.asin, p]),
@@ -208,6 +210,65 @@ export default async function DashboardPage() {
         <div style={{ marginBottom: 64 }}>
           <KpiRow cards={kpiCards} />
         </div>
+
+        {/* market_analysis 分布 (新スキーマ) */}
+        <section style={{ marginBottom: 64 }}>
+          <div className="rowsplit" style={{ marginBottom: 16 }}>
+            <div className="eyebrow">市場魅力度ランキング (DB 全件)</div>
+            <Link href="/search" className="btn-text" style={{ fontSize: 12 }}>
+              探索 ›
+            </Link>
+          </div>
+          {marketDist.total === 0 ? (
+            <div
+              style={{
+                padding: 24,
+                border: "1px dashed var(--border-2)",
+                fontSize: 13,
+                color: "var(--fg-3)",
+                textAlign: "center",
+              }}
+            >
+              market_analysis にまだ ASIN がありません。
+              「<Link href="/search" className="btn-text blue">新しい探索</Link>」ボタンから新カテゴリ調査を実行すると蓄積されます。
+            </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 24 }}>
+              <div className="kpi go">
+                <div className="label">GO</div>
+                <div className="val num">
+                  {marketDist.go}
+                  <span className="unit">件</span>
+                </div>
+                <div className="sub">market_score ≥ 70 + 全ゲート合格</div>
+              </div>
+              <div className="kpi cond">
+                <div className="label">条件付き</div>
+                <div className="val num">
+                  {marketDist.cond}
+                  <span className="unit">件</span>
+                </div>
+                <div className="sub">≥ 50 / critical ゲート合格</div>
+              </div>
+              <div className="kpi no">
+                <div className="label">NO-GO</div>
+                <div className="val num">
+                  {marketDist.noGo}
+                  <span className="unit">件</span>
+                </div>
+                <div className="sub">スコア低 or 強制ゲート発動</div>
+              </div>
+              <div className="kpi">
+                <div className="label">平均 market_score</div>
+                <div className="val num">
+                  {marketDist.avgScore}
+                  <span className="unit">/100</span>
+                </div>
+                <div className="sub">全 {marketDist.total} 件の平均</div>
+              </div>
+            </div>
+          )}
+        </section>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr", gap: 48 }}>
           <section>

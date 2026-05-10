@@ -156,9 +156,32 @@ export interface IngestDiscoverResult {
   tokensLeft?: number;
 }
 
-/** Keepa が過剰請求しないように、 ingestDiscover 開始時にこの値より tokensLeft が
+/** Keepa が過剰請求しないように、 ingest 系開始時にこの値より tokensLeft が
  * 少ない場合は実行を拒否する。 -10 まで許容するのは /token 取得自体の誤差吸収。 */
 const TOKEN_REFUSAL_THRESHOLD = -10;
+
+/** 共通 precheck。 0 token 課金の /token を呼び、残量がしきい値を下回っていれば
+ * 拒否情報を返す (上位は throw でなく Result を見て中断する想定)。 */
+async function precheckTokenBalance(): Promise<
+  { ok: true; tokensLeft: number } | { ok: false; tokensLeft: number; refusedReason: string }
+> {
+  try {
+    const status = await fetchKeepaTokenStatus();
+    if (status.tokensLeft < TOKEN_REFUSAL_THRESHOLD) {
+      const refillMin = Math.ceil(
+        (TOKEN_REFUSAL_THRESHOLD - status.tokensLeft) / Math.max(status.refillRate, 1),
+      );
+      return {
+        ok: false,
+        tokensLeft: status.tokensLeft,
+        refusedReason: `Keepa tokensLeft=${status.tokensLeft} (要求: ≥ ${TOKEN_REFUSAL_THRESHOLD})。 復帰まで約 ${refillMin} 分。`,
+      };
+    }
+    return { ok: true, tokensLeft: status.tokensLeft };
+  } catch {
+    return { ok: true, tokensLeft: -1 }; // /token 失敗時は best-effort で続行
+  }
+}
 
 /**
  * Keepa /query 1 コールで取得 → products / keepa_snapshot / market_analysis に永続化。
@@ -177,28 +200,17 @@ export async function ingestDiscover(
 
   // 開始前に Keepa /token で残量を確認 (これ自体は 0 token 課金)。
   // 残量が深く負なら、 ingest 中にさらに使い込むのを防ぐためここで断る。
-  let tokensLeft: number | undefined;
-  try {
-    const status = await fetchKeepaTokenStatus();
-    tokensLeft = status.tokensLeft;
-    if (status.tokensLeft < TOKEN_REFUSAL_THRESHOLD) {
-      const refillMin = Math.ceil(
-        (TOKEN_REFUSAL_THRESHOLD - status.tokensLeft) / Math.max(status.refillRate, 1),
-      );
-      return {
-        ingested: 0,
-        asins: [],
-        durationMs: Date.now() - start,
-        tokensLeft: status.tokensLeft,
-        refusedReason: `Keepa tokensLeft=${status.tokensLeft} (要求: ≥ ${TOKEN_REFUSAL_THRESHOLD})。 復帰まで約 ${refillMin} 分。 待ってから再実行してください。`,
-      };
-    }
-  } catch (err) {
-    // /token 失敗時は続行 (token なしで /query を投げて 429 になる可能性あり)
-    console.warn("[apde:ingest:discover] /token check failed, proceeding", {
-      message: err instanceof Error ? err.message : String(err),
-    });
+  const balance = await precheckTokenBalance();
+  if (!balance.ok) {
+    return {
+      ingested: 0,
+      asins: [],
+      durationMs: Date.now() - start,
+      tokensLeft: balance.tokensLeft,
+      refusedReason: balance.refusedReason,
+    };
   }
+  const tokensLeft = balance.tokensLeft;
 
   const products = await findProductsByCategory({
     rootCategory: appCategory.keepaRootCategory,
@@ -304,6 +316,8 @@ export interface IngestFullResult {
   pricePoints: number;
   bsrPoints: number;
   sellerPoints: number;
+  refusedReason?: string;
+  tokensLeft?: number;
 }
 
 /**
@@ -312,6 +326,17 @@ export interface IngestFullResult {
  * 1 token / ASIN 消費 (history=1 含む)。
  */
 export async function ingestFull(asin: string): Promise<IngestFullResult> {
+  const balance = await precheckTokenBalance();
+  if (!balance.ok) {
+    return {
+      asin,
+      pricePoints: 0,
+      bsrPoints: 0,
+      sellerPoints: 0,
+      tokensLeft: balance.tokensLeft,
+      refusedReason: balance.refusedReason,
+    };
+  }
   const series = await fetchKeepaSeries(asin);
 
   // products を保証 upsert (FK 制約)
@@ -395,17 +420,34 @@ export async function ingestFull(asin: string): Promise<IngestFullResult> {
     pricePoints: priceRows.length + buyBoxRows.length,
     bsrPoints: bsrRows.length,
     sellerPoints: sellerRows.length,
+    tokensLeft: balance.tokensLeft,
   };
 }
 
 // ─── ingestDiff (1 ASIN, history=0) ────────────────────────────────────
+
+export interface IngestDiffResult {
+  asin: string;
+  updated: boolean;
+  refusedReason?: string;
+  tokensLeft?: number;
+}
 
 /**
  * 1 ASIN を /product?history=0 で取り、 keepa_snapshot のみ更新する。
  * Cron (Tier 1: 24h, Tier 2: 7d) と詳細ページの「最新値を取得」ボタンから呼ばれる。
  * 1 token / ASIN 消費。
  */
-export async function ingestDiff(asin: string): Promise<{ asin: string; updated: boolean }> {
+export async function ingestDiff(asin: string): Promise<IngestDiffResult> {
+  const balance = await precheckTokenBalance();
+  if (!balance.ok) {
+    return {
+      asin,
+      updated: false,
+      tokensLeft: balance.tokensLeft,
+      refusedReason: balance.refusedReason,
+    };
+  }
   const got = await fetchKeepaProductsBatch([asin]);
   const p = got[0];
   if (!p) return { asin, updated: false };
@@ -436,7 +478,7 @@ export async function ingestDiff(asin: string): Promise<{ asin: string; updated:
     metrics.monthlySalesSource ?? "seed",
   );
 
-  return { asin: p.asin, updated: true };
+  return { asin: p.asin, updated: true, tokensLeft: balance.tokensLeft };
 }
 
 // ─── recomputeMarketAnalysis (DB-only) ─────────────────────────────────

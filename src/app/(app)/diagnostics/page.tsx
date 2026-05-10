@@ -5,12 +5,12 @@
 // 4) 任意 ASIN に対する Keepa + LLM の即時プローブ
 import Link from "next/link";
 import { ProbeForm } from "@/components/diagnostics/ProbeForm";
+import { RecomputeAllButton } from "@/components/diagnostics/RecomputeAllButton";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { env, mockMode } from "@/lib/env";
 import { fmtNum, yen } from "@/lib/format";
 import { getLastGeminiError } from "@/lib/llm/gemini";
 import {
-  getCachedKeepa,
   getRefreshQueueCounts,
   getStorageCounts,
   listApiUsageThisMonth,
@@ -78,8 +78,31 @@ export default async function DiagnosticsPage() {
   // Service Role キーの末尾 4 文字だけ表示 (機密保護)
   const maskKey = (k: string): string => (k ? `…${k.slice(-4)}` : "(unset)");
 
-  // 任意 ASIN の cache 状態 (URL ?asin=B0XXX で渡せる)
-  const recentKeepaCache = await getCachedKeepa("B0CXM7K2PQ");
+  // 直近で fetch された keepa_snapshot を 1 行表示 (旧 keepa_data の代替)
+  type SnapshotPreview = {
+    asin: string;
+    fetched_at: string;
+    current_new_yen: number | null;
+    bsr: number | null;
+    count_new: number | null;
+    count_reviews: number | null;
+    monthly_sold: number | null;
+  };
+  let recentSnapshot: SnapshotPreview | null = null;
+  {
+    const supa = getServiceRoleSupabase();
+    if (supa) {
+      const { data } = await supa
+        .from("keepa_snapshot")
+        .select("asin,fetched_at,current_new_yen,bsr,count_new,count_reviews,monthly_sold")
+        .order("fetched_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (data) {
+        recentSnapshot = data as unknown as SnapshotPreview;
+      }
+    }
+  }
   const lastGeminiError = getLastGeminiError();
 
   // Keepa トークン残高取得 (/token は 1 トークン消費しない情報専用エンドポイント)
@@ -296,6 +319,16 @@ export default async function DiagnosticsPage() {
           <ProbeForm />
         </section>
 
+        {/* ── R5 polish: 管理アクション ── */}
+        <section style={{ marginBottom: 32 }}>
+          <div className="eyebrow" style={{ marginBottom: 12 }}>管理アクション</div>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 16, lineHeight: 1.7 }}>
+            評価式 (5 軸ウェイト / ゲートしきい値 / brand-policy) を更新したら全 ASIN 再計算で反映できます。
+            DB のみ参照のため Keepa は 0 token。
+          </p>
+          <RecomputeAllButton />
+        </section>
+
         {/* ── R5: Refresh queue (Tier 別) ── */}
         <section style={{ marginBottom: 56 }}>
           <div className="eyebrow" style={{ marginBottom: 16 }}>Refresh queue (Cron Tier 別)</div>
@@ -445,22 +478,24 @@ export default async function DiagnosticsPage() {
           </div>
         </section>
 
-        {/* ── サンプル ASIN のキャッシュ確認 ── */}
+        {/* ── 直近の Keepa スナップショット (1 行) ── */}
         <section>
-          <div className="eyebrow" style={{ marginBottom: 16 }}>Keepa キャッシュ (B0CXM7K2PQ)</div>
-          {recentKeepaCache ? (
+          <div className="eyebrow" style={{ marginBottom: 16 }}>直近 keepa_snapshot</div>
+          {recentSnapshot ? (
             <table className="tbl">
               <tbody>
-                <tr><td>price_history points</td><td className="num">{recentKeepaCache.price_history.length}</td></tr>
-                <tr><td>bsr_history points</td><td className="num">{recentKeepaCache.bsr_history.length}</td></tr>
-                <tr><td>seller_history points</td><td className="num">{recentKeepaCache.seller_history.length}</td></tr>
-                <tr><td>updated_at</td><td className="num">{new Date(recentKeepaCache.updated_at).toLocaleString("ja-JP")}</td></tr>
-                <tr><td>source</td><td>{recentKeepaCache.source}</td></tr>
+                <tr><td>asin</td><td className="num">{recentSnapshot.asin}</td></tr>
+                <tr><td>fetched_at</td><td className="num">{new Date(recentSnapshot.fetched_at).toLocaleString("ja-JP")}</td></tr>
+                <tr><td>current_new_yen</td><td className="num">{recentSnapshot.current_new_yen ?? "—"}</td></tr>
+                <tr><td>bsr</td><td className="num">{recentSnapshot.bsr ?? "—"}</td></tr>
+                <tr><td>count_new (sellers)</td><td className="num">{recentSnapshot.count_new ?? "—"}</td></tr>
+                <tr><td>count_reviews</td><td className="num">{recentSnapshot.count_reviews ?? "—"}</td></tr>
+                <tr><td>monthly_sold</td><td className="num">{recentSnapshot.monthly_sold ?? "—"}</td></tr>
               </tbody>
             </table>
           ) : (
             <div className="muted" style={{ fontSize: 13 }}>
-              キャッシュなし (B0CXM7K2PQ は未取得) — 上のプローブから取得を試せます。
+              keepa_snapshot にデータがありません。 /search からカテゴリ調査を実行すると 1 行作成されます。
             </div>
           )}
         </section>

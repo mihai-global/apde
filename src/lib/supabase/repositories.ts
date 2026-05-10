@@ -1204,6 +1204,54 @@ export async function getRefreshQueueCounts(): Promise<RefreshQueueCounts> {
   };
 }
 
+export interface MarketDistribution {
+  go: number;
+  cond: number;
+  noGo: number;
+  total: number;
+  /** 平均 market_score (0-100)。 行が無いとき 0。 */
+  avgScore: number;
+}
+
+export async function getMarketDistribution(): Promise<MarketDistribution> {
+  if (mockMode.supabase) {
+    const rows = Array.from(getMockStore().marketAnalysis.values());
+    let go = 0, cond = 0, noGo = 0, sum = 0;
+    for (const r of rows) {
+      if (r.decision === "go") go += 1;
+      else if (r.decision === "cond") cond += 1;
+      else if (r.decision === "no_go") noGo += 1;
+      sum += Number(r.market_score ?? 0);
+    }
+    return {
+      go,
+      cond,
+      noGo,
+      total: rows.length,
+      avgScore: rows.length > 0 ? Math.round((sum / rows.length) * 10) / 10 : 0,
+    };
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return { go: 0, cond: 0, noGo: 0, total: 0, avgScore: 0 };
+  const [go, cond, noGo, all] = await Promise.all([
+    supabase.from("market_analysis").select("asin", { count: "exact", head: true }).eq("decision", "go"),
+    supabase.from("market_analysis").select("asin", { count: "exact", head: true }).eq("decision", "cond"),
+    supabase.from("market_analysis").select("asin", { count: "exact", head: true }).eq("decision", "no_go"),
+    supabase.from("market_analysis").select("market_score"),
+  ]);
+  const scores = ((all.data ?? []) as Array<{ market_score: number | null }>)
+    .map((r) => Number(r.market_score ?? 0))
+    .filter((n) => Number.isFinite(n));
+  const avg = scores.length > 0 ? scores.reduce((s, n) => s + n, 0) / scores.length : 0;
+  return {
+    go: go.count ?? 0,
+    cond: cond.count ?? 0,
+    noGo: noGo.count ?? 0,
+    total: (go.count ?? 0) + (cond.count ?? 0) + (noGo.count ?? 0),
+    avgScore: Math.round(avg * 10) / 10,
+  };
+}
+
 export interface StorageCounts {
   products: number;
   keepaSnapshot: number;
