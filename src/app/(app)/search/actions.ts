@@ -50,6 +50,8 @@ export interface RunIngestDiscoverResult {
   /** Keepa token 残量不足で実行を拒否したときのメッセージ */
   refusedReason?: string;
   tokensLeft?: number;
+  /** title/price が空でスキップした ASIN 数 */
+  skippedEmpty?: number;
 }
 
 /**
@@ -70,6 +72,7 @@ export async function runIngestDiscover(
       durationMs: result.durationMs,
       refusedReason: result.refusedReason,
       tokensLeft: result.tokensLeft,
+      skippedEmpty: result.skippedEmpty,
       error: result.refusedReason,
     };
   } catch (err) {

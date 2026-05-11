@@ -154,6 +154,8 @@ export interface IngestDiscoverResult {
   /** Keepa token がマイナスで実行を拒否した場合の理由 */
   refusedReason?: string;
   tokensLeft?: number;
+  /** /query が返したが title / price が空で除外した件数 (ノイズ抑制目的) */
+  skippedEmpty?: number;
 }
 
 /** Keepa が過剰請求しないように、 ingest 系開始時にこの値より tokensLeft が
@@ -264,7 +266,18 @@ export async function ingestDiscover(
   });
 
   const ts = nowIso();
-  const validProducts = merged.filter((p) => !!p.asin);
+  // Keepa から meta data (title / price) が取れていない ASIN は market_analysis 上で
+  // 意味のあるスコアにならない (mock seed のままで decision が当てにならない) ため除外。
+  // title または currentPrice のどちらかでも取れていれば残す。
+  const totalReturned = merged.length;
+  const validProducts = merged.filter(
+    (p) =>
+      typeof p.asin === "string" &&
+      p.asin.length > 0 &&
+      ((typeof p.title === "string" && p.title.trim().length > 0) ||
+        (typeof p.currentPrice === "number" && p.currentPrice > 0)),
+  );
+  const skippedEmpty = totalReturned - validProducts.length;
   const asins = validProducts.map((p) => p.asin);
 
   // バッチ並列化: 1 ASIN 内は (FK 制約のため) products → snapshot → market を直列。
@@ -306,7 +319,13 @@ export async function ingestDiscover(
     );
   }
 
-  return { ingested: asins.length, asins, durationMs: Date.now() - start, tokensLeft };
+  return {
+    ingested: asins.length,
+    asins,
+    durationMs: Date.now() - start,
+    tokensLeft,
+    skippedEmpty,
+  };
 }
 
 // ─── ingestFull (1 ASIN, history=1) ────────────────────────────────────

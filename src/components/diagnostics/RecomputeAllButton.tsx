@@ -3,59 +3,107 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
+  purgeEmptyAsins,
   recomputeAllMarketAnalysis,
+  type PurgeEmptyResult,
   type RecomputeAllResult,
 } from "@/app/(app)/diagnostics/actions";
 
 /**
- * /diagnostics に置く管理ボタン。 評価式や brand-policy を変えたあとに、
- * DB に存在する全 market_analysis を再計算する (Keepa を呼ばない / 0 token)。
+ * /diagnostics に置く管理ボタン群。
+ * - 全 ASIN 再計算 (Keepa 0 token、評価式変更時の反映)
+ * - 空 ASIN 削除 (title が ASIN のまま + price 無しのノイズ行を一掃)
  */
 export function RecomputeAllButton() {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [last, setLast] = useState<RecomputeAllResult | null>(null);
+  const [pendingKind, setPendingKind] = useState<"recompute" | "purge" | null>(null);
+  const [lastRecompute, setLastRecompute] = useState<RecomputeAllResult | null>(null);
+  const [lastPurge, setLastPurge] = useState<PurgeEmptyResult | null>(null);
 
-  function handleClick() {
+  function handleRecompute() {
     if (
       !window.confirm(
         "全 market_analysis 行を再計算しますか? \n(Keepa 呼び出しなし / 0 token、 ~10 件/秒)",
       )
     ) return;
-    setLast(null);
+    setPendingKind("recompute");
+    setLastRecompute(null);
     startTransition(async () => {
       const r = await recomputeAllMarketAnalysis();
-      setLast(r);
+      setLastRecompute(r);
+      setPendingKind(null);
+      if (r.ok) router.refresh();
+    });
+  }
+
+  function handlePurge() {
+    if (
+      !window.confirm(
+        "title 未取得 + price 未取得のノイズ ASIN を削除しますか? \n(cascade で snapshot / market_analysis / history も消えます)",
+      )
+    ) return;
+    setPendingKind("purge");
+    setLastPurge(null);
+    startTransition(async () => {
+      const r = await purgeEmptyAsins();
+      setLastPurge(r);
+      setPendingKind(null);
       if (r.ok) router.refresh();
     });
   }
 
   return (
     <div>
-      <button
-        type="button"
-        className="pill solid"
-        onClick={handleClick}
-        disabled={pending}
-        style={{ marginBottom: 12 }}
-      >
-        {pending ? "再計算中…" : "全 ASIN 再計算"}
-        <span className="arrow">›</span>
-      </button>
-      {last ? (
+      <div className="cluster" style={{ gap: 8, marginBottom: 12 }}>
+        <button
+          type="button"
+          className="pill solid"
+          onClick={handleRecompute}
+          disabled={pending}
+        >
+          {pendingKind === "recompute" ? "再計算中…" : "全 ASIN 再計算"}
+          <span className="arrow">›</span>
+        </button>
+        <button
+          type="button"
+          className="pill"
+          onClick={handlePurge}
+          disabled={pending}
+        >
+          {pendingKind === "purge" ? "削除中…" : "空 ASIN を一掃"}
+          <span className="arrow">›</span>
+        </button>
+      </div>
+      {lastRecompute ? (
         <div
           style={{
             padding: "8px 12px",
-            border: `1px solid ${last.ok ? "var(--decision-go)" : "var(--decision-no)"}`,
-            background: last.ok ? "var(--decision-go-bg)" : "var(--decision-no-bg)",
+            border: `1px solid ${lastRecompute.ok ? "var(--decision-go)" : "var(--decision-no)"}`,
+            background: lastRecompute.ok ? "var(--decision-go-bg)" : "var(--decision-no-bg)",
+            fontSize: 12,
+            marginBottom: 8,
+          }}
+        >
+          {lastRecompute.ok
+            ? `再計算 完了: ${lastRecompute.succeeded} / ${lastRecompute.total} 件 成功 (${lastRecompute.failed} 失敗) / ${(
+                lastRecompute.durationMs / 1000
+              ).toFixed(1)} 秒`
+            : `エラー: ${lastRecompute.error}`}
+        </div>
+      ) : null}
+      {lastPurge ? (
+        <div
+          style={{
+            padding: "8px 12px",
+            border: `1px solid ${lastPurge.ok ? "var(--decision-go)" : "var(--decision-no)"}`,
+            background: lastPurge.ok ? "var(--decision-go-bg)" : "var(--decision-no-bg)",
             fontSize: 12,
           }}
         >
-          {last.ok
-            ? `完了: ${last.succeeded} / ${last.total} 件 成功 (${last.failed} 失敗) / ${(
-                last.durationMs / 1000
-              ).toFixed(1)} 秒`
-            : `エラー: ${last.error}`}
+          {lastPurge.ok
+            ? `空 ASIN 削除: ${lastPurge.deleted} 件`
+            : `エラー: ${lastPurge.error}`}
         </div>
       ) : null}
     </div>
