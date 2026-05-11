@@ -42,7 +42,7 @@ interface MarketCandidateListViewProps {
   showSummary?: boolean;
 }
 
-type SortKey = "score" | "demand" | "profit" | "price" | "review";
+type SortKey = "score" | "oem" | "demand" | "profit" | "price" | "review";
 type FilterKey = "all" | MarketDecision;
 
 const DECISION_LABEL: Record<MarketDecision, string> = {
@@ -76,6 +76,8 @@ export function MarketCandidateListView({
       switch (sort) {
         case "score":
           return (b.marketScore ?? 0) - (a.marketScore ?? 0);
+        case "oem":
+          return (b.axisDifferentiation ?? 0) - (a.axisDifferentiation ?? 0);
         case "demand":
           return (b.axisDemand ?? 0) - (a.axisDemand ?? 0);
         case "profit":
@@ -178,6 +180,7 @@ export function MarketCandidateListView({
             value={sort}
             options={[
               { value: "score", label: "市場魅力度" },
+              { value: "oem", label: "OEM適性" },
               { value: "demand", label: "需要" },
               { value: "profit", label: "利益" },
               { value: "price", label: "価格" },
@@ -195,6 +198,9 @@ export function MarketCandidateListView({
             <th style={{ width: 120 }}>判定</th>
             <th className="col-title">商品</th>
             <th style={{ width: 130 }}>市場魅力度</th>
+            <th style={{ width: 110 }} title="OEM 再現性 + 差別化余地 + 複雑度 + ブランド独立性の合成 (0-100)">
+              OEM適性
+            </th>
             <th className="right">価格</th>
             <th className="right">月販</th>
             <th className="right">レビュー</th>
@@ -263,6 +269,9 @@ function MarketRow({ r }: { r: MarketCandidateRow }) {
         <td>
           <ScoreBar score={Math.round(r.marketScore ?? 0)} />
         </td>
+        <td title="OEM 再現性 + 差別化余地 + 複雑度 + ブランド独立性の合成 (0-100)">
+          <ScoreBar score={Math.round(r.axisDifferentiation ?? 0)} />
+        </td>
         <td className="right num">{r.currentPriceYen ? yen(r.currentPriceYen) : "—"}</td>
         <td className="right num">
           {r.monthlySold !== null ? `${fmtNum(r.monthlySold)}/月` : "—"}
@@ -295,7 +304,7 @@ const AXIS_LABELS: Array<{ key: keyof Pick<MarketCandidateRow, "axisDemand" | "a
 function AxisDetailRow({ r }: { r: MarketCandidateRow }) {
   return (
     <tr>
-      <td colSpan={8} style={{ background: "var(--bg-2)", padding: 16 }}>
+      <td colSpan={9} style={{ background: "var(--bg-2)", padding: 16 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 16, marginBottom: 12 }}>
           {AXIS_LABELS.map((axis) => {
             const value = r[axis.key] ?? 0;
