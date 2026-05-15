@@ -80,10 +80,6 @@
 3. プロンプトテンプレ: `src/lib/llm/prompts.ts`
 4. レポート再現性: `analysis.prompt_version` 列に保存 (現在 `report-v1.0`)
 
-## SST フォント (任意)
-
-Sony 社内利用者は `public/fonts/` に `SST JP Pro` / `SST` の OTF/WOFF を配置すると自動適用されます。`.gitignore` で誤コミットを抑止しているため、リポジトリには含まれません。
-
 ## 動作確認
 
 ```bash

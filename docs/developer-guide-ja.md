@@ -159,7 +159,7 @@ docs/
 
 ### フォント
 
-`--font-sans` は `"SST JP Pro", "SST", var(--font-noto-jp), var(--font-inter), system fonts` の順序で定義されています。Sony 内部利用者は `public/fonts/` に SST OTF を配置すると自動適用されます。リポジトリには同梱しません (`.gitignore` で抑制)。
+`--font-sans` は `var(--font-noto-jp), var(--font-inter), system fonts` の順序で定義されています。
 
 ---
 

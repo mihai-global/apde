@@ -1,7 +1,6 @@
 /* =========================================================
    APDE — Amazon Product Discovery Engine
-   Editorial Light • Sony Design System (SST フォントは未同梱、
-   公開リポジトリでは Inter + Noto Sans JP にフォールバック)
+   Editorial Light Design System (Inter + Noto Sans JP)
    ========================================================= */
 
 :root {
@@ -58,8 +57,8 @@
   --brand-2: var(--action-blue-2);
   --neutral: var(--gray-500);
 
-  /* type — SST が同梱されている場合のみ採用、無ければ Noto / Inter にフォールバック */
-  --font-sans: "SST JP Pro", "SST", var(--font-noto-jp, "Noto Sans JP"), var(--font-inter, "Inter"),
+  /* type — Noto Sans JP / Inter ベース */
+  --font-sans: var(--font-noto-jp, "Noto Sans JP"), var(--font-inter, "Inter"),
     -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Kaku Gothic ProN", "Yu Gothic",
     sans-serif;
   --font-mono: "SF Mono", Menlo, Consolas, monospace;
@@ -169,7 +168,7 @@ hr.rule { border: 0; border-top: 1px solid var(--border-1); margin: 0; }
   align-items: baseline;
   gap: 12px;
   font-weight: 700;
-  font-family: "SST", var(--font-sans);
+  font-family: var(--font-sans);
   letter-spacing: 0.04em;
 }
 .app-header .brand .mark {
@@ -236,7 +235,7 @@ hr.rule { border: 0; border-top: 1px solid var(--border-1); margin: 0; }
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  font-family: "SST", var(--font-sans);
+  font-family: var(--font-sans);
 }
 
 /* ---------- LAYOUT ---------- */

@@ -10,7 +10,7 @@
 - 5ページ構成: ダッシュボード / 探索 / 候補一覧 / 商品詳細 / 監視リスト / 学習辞書
 - 商品詳細は8セクション (結論 / スコア / ゲート / Keepa / 利益性 / LLM / 履歴 / メモ)
 - ライト・ダーク両モード、密度3段階、判定バッジ4スタイル切替対応
-- Editorial Light Design System (Sony Design System に準拠したミニマル黒白ベース)
+- Editorial Light Design System (ミニマル黒白ベース)
 - Supabase Auth + PostgreSQL / Keepa API / Gemini API 連携
 - 外部API無しでも動く mockMode (env未設定時に自動切替)
 
@@ -35,7 +35,3 @@ pnpm dev                           # http://localhost:3000
 `demo/index.html` は外部 API 無しで動作する **UI 完成版のスタンドアロン HTML** です。
 ブラウザで開くだけで全画面のデザインを確認できます (実データは扱いません)。
 
-## ライセンス / 注記
-
-- Sony SST / SST JP Pro フォントはリポジトリ非公開です。`public/fonts/` に配置すれば自動的に適用されます。
-- 個人運用前提のスコープです (アンチゴール: マルチテナント / 自動仕入れ / SaaS 化)。
