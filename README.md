@@ -27,7 +27,8 @@ pnpm dev                           # http://localhost:3000
 ## 関連ドキュメント
 
 - [開発者向けスタートアップガイド](docs/developer-guide-ja.md) — セットアップ / アーキテクチャ / API / DB / デプロイまで
-- [本番環境セットアップ手順](docs/production-setup-ja.md) — Vercel + Supabase + Keepa + Gemini
+- [本番環境セットアップ手順](docs/production-setup-ja.md) — Vercel + Supabase + Keepa + Gemini 全体構成
+- [R6 デプロイ手順書](docs/r6-deploy-runbook-ja.md) — 24/7 Cron + Discovery キュー有効化の番号付き手順
 - [要件定義書 v1.1](docs/requirements_v1_1_ja.md) — 機能要件・データモデル・KPI
 
 ## デモ

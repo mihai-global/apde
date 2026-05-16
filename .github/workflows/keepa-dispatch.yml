@@ -1,0 +1,64 @@
+name: Keepa Dispatch (R6)
+
+# Token 回復 → Refresh → Discovery の一気通貫 cron。
+# /api/cron/dispatch は Tier1/2 リフレッシュ + Discovery キュー 1 ジョブまで予算内で消化する。
+#
+# 既存 keepa-refresh.yml は Refresh しかしない縮小版。 R6 以降はこの workflow に置き換える。
+# 既存 keepa-refresh.yml を残したまま両方有効化すると毎時 1 回は 2 回叩かれるが、
+# dispatch の precheck (tokensLeft < -10 で拒否) が二重消費を防ぐので安全。
+# (重複が気になる場合は keepa-refresh.yml を disable してよい)
+#
+# 必要な Secrets:
+#   APDE_BASE_URL: 例 https://apde.vercel.app
+#   CRON_SECRET  : Vercel 側の env.CRON_SECRET と同じ値
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # 15 分おき (GH Actions Cron は遅延ありうるので実効 15-30 分)
+  workflow_dispatch:
+
+# 前 run が長引いていても並走させない (token 競合防止)
+concurrency:
+  group: keepa-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.APDE_BASE_URL }}" ] || [ -z "${{ secrets.CRON_SECRET }}" ]; then
+            echo "::error::APDE_BASE_URL or CRON_SECRET not set"
+            exit 1
+          fi
+      - name: Hit /api/cron/dispatch
+        env:
+          BASE_URL: ${{ secrets.APDE_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "$BASE_URL/api/cron/dispatch" \
+            -H "x-cron-secret: $CRON_SECRET" \
+            -H "content-type: application/json" \
+            --max-time 90 | tee dispatch-result.json
+          echo
+      - name: Summarize
+        if: always()
+        run: |
+          if [ -s dispatch-result.json ]; then
+            {
+              echo "## Keepa dispatch result"
+              jq -r '
+                "- tier1 processed: \(.refresh.tier1.processed)\n" +
+                "- tier2 processed: \(.refresh.tier2.processed)\n" +
+                "- discovery: job=\(.discovery.pickedJob.id // "none") category=\(.discovery.pickedJob.category // "-") ingested=\(.discovery.ingested) skipped=\(.discovery.skippedEmpty)\n" +
+                "- tokens: \(.tokensBefore) → \(.tokensAfter) (budget=\(.budget))\n" +
+                "- duration: \(.durationMs)ms\n" +
+                (if (.notes | length) > 0 then "- notes: \(.notes | join("; "))" else "" end)
+              ' dispatch-result.json
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no dispatch-result.json (curl likely failed)"
+          fi

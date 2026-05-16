@@ -103,6 +103,7 @@ export default async function ProductDetailPage({
               src={analysis.metrics.imageUrl ?? product?.imageUrl}
               alt={analysis.title}
               seed={thumbSeed}
+              label={analysis.asin.slice(0, 2)}
               size={96}
             />
             <div style={{ flex: 1, minWidth: 0 }}>

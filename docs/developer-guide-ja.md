@@ -190,15 +190,24 @@ docs/
   → addToWatchlist() Server Action から watchlist 更新
 ```
 
-### 6.3 再評価フロー (Cron 想定)
+### 6.3 再評価 + Discovery フロー (Cron 想定、R6)
 
 ```
-POST /api/refresh
-  Authorization: Bearer ${CRON_SECRET}
-  → listWatchlist()
-  → 各 ASIN を analyzeProduct → 新スコア生成
-  → (将来) analysis に新エントリで保存 + 差分通知
+POST /api/cron/dispatch              ← GitHub Actions が 15min おきに呼ぶ
+  x-cron-secret: ${CRON_SECRET}
+  → fetchKeepaTokenStatus()          ← 0 token、 残量取得
+  → budget = min(left - 10, 50)
+  → runRefreshStage(budget)
+      → Tier1 (sourcing/live, 24h):  listProductsForRefresh + ingestDiff (1 token/ASIN)
+      → Tier2 (candidate, 7d):       同上
+  → runDiscoveryStage(残 budget)
+      → pickNextDiscoveryJob()        ← discovery_queue から 1 ジョブ pop
+      → ingestDiscover(条件)          ← /query 1 call ≈ 5-10 token
+      → markDiscoveryJobDone / Failed
+  → 200 + JSON summary
 ```
+
+旧仕様の `/api/cron/refresh` は R5 互換のため残置されているが、 中身は `runRefreshStage()` を呼ぶ薄いラッパ。 新規セットアップでは `/api/cron/dispatch` を使うこと。
 
 ---
 
@@ -216,11 +225,28 @@ POST /api/refresh
 ```
 → `AnalysisResult` (score / decision / breakdown / gates / metrics / derived / profit / insight)
 
-### `POST /api/refresh` (Cron)
+### `POST /api/cron/dispatch` (R6, 主軸 Cron)
+```bash
+curl -X POST $APP_URL/api/cron/dispatch -H "x-cron-secret: $CRON_SECRET"
+```
+→ `DispatchSummary` (tokens / budget / refresh.tier1 / refresh.tier2 / discovery)
+GitHub Actions の `.github/workflows/keepa-dispatch.yml` から 15min おきに叩く。
+
+### `POST /api/cron/refresh` (R5 互換)
+```bash
+curl -X POST $APP_URL/api/cron/refresh -H "x-cron-secret: $CRON_SECRET"
+```
+Tier1/2 リフレッシュのみ (Discovery なし)。 中身は `runRefreshStage()` のラッパ。
+
+### `POST /api/refresh` (v1 レガシー)
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" -X POST $APP_URL/api/refresh
 ```
-→ `RefreshReport`
+watchlist 単純再評価。 R6 では使用しない。 削除候補。
+
+### `POST /api/ingest/{discover,full,diff,recompute}` (R5)
+内部 cron / 詳細ページから叩く Keepa ingest プリミティブ。 認証は `x-cron-secret`。
+→ 仕様詳細は `src/lib/keepa/ingest.ts` を参照。
 
 ### `GET /api/usage`
 → `{ total, budget, perProvider, callsLast24h }`
@@ -231,18 +257,30 @@ UI 内部の CRUD は Server Actions (`(app)/.../actions.ts`) を使用。REST A
 
 ## 8. DB スキーマと RLS
 
-`db/schema.sql` で以下 10 テーブルを定義:
+`db/schema.sql` で以下のテーブルを定義 (R6 時点):
 
-1. `products` — ASIN マスタ (重量・サイズ・ブランド集中度)
-2. `keepa_data` — 価格・BSR・出品者・Buy Box の時系列 + 派生指標 (CV など)
-3. `analysis` — スコア + ゲート + 利益性 + LLM レポート (履歴保持・上書き禁止)
-4. `discovery_runs` — 探索ラン (キーワード / 候補 / 除外)
-5. `watchlist` — 監視中 ASIN (status: candidate / sourcing / live)
-6. `dictionary` — 学習辞書 (4 種別)
-7. `purchase_feedback` — 仕入後の結果 (Phase 4 で集計利用)
-8. `api_usage` — API コスト履歴
-9. `app_settings` — KV 設定 (cache_only_mode / cost_budget_jpy など)
-10. `analysis_threads` — ASIN 別 LLM Q&A
+| | テーブル | 役割 |
+|---|---|---|
+| v1 | `products` | ASIN マスタ (重量・サイズ・ブランド集中度) |
+| v1 | `keepa_data` | 価格・BSR・出品者・Buy Box の時系列 + 派生指標 (CV など) ※ R1 で `keepa_snapshot` + `*_history` に置換、 後方互換のため残置 |
+| v1 | `analysis` | スコア + ゲート + 利益性 + LLM レポート (履歴保持・上書き禁止) |
+| v1 | `discovery_runs` | 探索ラン (キーワード / 候補 / 除外) |
+| v1 | `watchlist` | 監視中 ASIN (status: candidate / sourcing / live) |
+| v1 | `dictionary` | 学習辞書 (4 種別) |
+| v1 | `purchase_feedback` | 仕入後の結果 (Phase 4 で集計利用) |
+| v1 | `api_usage` | API コスト履歴 |
+| v1 | `app_settings` | KV 設定 (cache_only_mode / cost_budget_jpy など) |
+| v1 | `analysis_threads` | ASIN 別 LLM Q&A |
+| R1 | `keepa_snapshot` | latest 値専用 (軽量読み出し) |
+| R1 | `price_history`, `bsr_history`, `seller_history` | 時系列 (ingestFull のみが populate) |
+| R1 | `market_analysis` | 5 軸 + ゲート + market_score を pre-compute |
+| R6 | `discovery_queue` | Cron dispatcher が ingestDiscover を循環実行するためのキュー |
+
+マイグレーション適用順 (既存環境を upgrade する場合):
+1. `db/migrations/0002_keepa_normalize.sql` — R1 の keepa_snapshot / market_analysis 等
+2. `db/migrations/0003_discovery_queue.sql` — R6 の discovery_queue
+
+fresh DB 構築なら `db/schema.sql` 1 本で全部入る (migrations は idempotent な no-op になる)。
 
 `db/rls.sql` は single-user 前提のため `auth.uid() IS NOT NULL` で全テーブルに full access ポリシーを当てます。
 
@@ -314,27 +352,19 @@ pnpm dev                # 開発サーバ
 
 ---
 
-## 12. デプロイ (Vercel)
+## 12. デプロイ (Vercel + GitHub Actions)
 
-1. Vercel に GitHub リポジトリを連携
-2. `Settings → Environment Variables` に以下を登録 (Production / Preview):
+> 詳細手順は専用ドキュメントに集約 — [`production-setup-ja.md`](production-setup-ja.md) / R6 移行は [`r6-deploy-runbook-ja.md`](r6-deploy-runbook-ja.md)。 ここでは要点のみ。
 
-```
-NEXT_PUBLIC_APP_URL=https://your-domain.com
-NEXT_PUBLIC_SUPABASE_URL=https://...supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-KEEPA_API_KEY=...
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=...
-CRON_SECRET=...
-COST_BUDGET_JPY=10000
-NOTIFY_WEBHOOK_URL=
-```
+1. Vercel に GitHub リポジトリを連携、`Settings → Environment Variables` に env 一式を登録
+2. Supabase で `db/schema.sql` → `db/rls.sql` → (任意) `db/seed.sql` の順に SQL Editor で実行
+3. 既存環境を R1/R6 に upgrade する場合は `db/migrations/0002_*` → `db/migrations/0003_*` も流す
+4. GitHub Secrets に `APDE_BASE_URL` / `CRON_SECRET` を登録
+5. `.github/workflows/keepa-dispatch.yml` が 15min cron で `/api/cron/dispatch` を叩く (R6 の主軸)
+6. 旧 `keepa-refresh.yml` は disable 推奨 (dispatch が superset)
+7. `main` ブランチに push → Production デプロイ
 
-3. Supabase に新規プロジェクトを作成 → SQL Editor で `db/schema.sql` → `db/rls.sql` → (任意) `db/seed.sql` を順に実行
-4. Vercel Cron Job を `Project → Cron Jobs` から追加: `0 17 * * *` (UTC) で `/api/refresh` を `Authorization: Bearer $CRON_SECRET` 付きで叩く
-5. `main` ブランチに push → Production デプロイ
+> Vercel Cron は使わない (Hobby の 1日1回上限では実用にならない)。 Pro に上げた場合のみ `vercel.json` に `crons:` を 2 行追加して移行可能。
 
 ---
 
@@ -343,7 +373,8 @@ NOTIFY_WEBHOOK_URL=
 | 症状 | 原因 | 対処 |
 |---|---|---|
 | `/` 開いた瞬間に `/login` に飛ばされる | 本番モードで Supabase 未認証 | `.env.local` を空にして mockMode で起動するか、Supabase でユーザー作成 |
-| `/api/refresh` が 503 | `CRON_SECRET` 未設定 | `.env.local` で値をセット |
+| `/api/cron/dispatch` が 503 | `CRON_SECRET` または `KEEPA_API_KEY` 未設定 | `.env.local` / Vercel env で値をセット |
+| `/api/cron/dispatch` が 401 | `x-cron-secret` ヘッダの値ミスマッチ | `CRON_SECRET` を確認 (Vercel env と GitHub Secrets 両方) |
 | Keepa が 429 を返す | レート制限 | `fetchWithRetry` が 3 回まで指数バックオフ。`KEEPA_DOMAIN` が正しいかも確認 |
 | Gemini が JSON parse 失敗 | `responseMimeType: application/json` 効かず | `gemini-2.5-pro` 以外を使う場合は `prompts.ts` を調整 / フォールバックされる |
 | 探索結果に同じカテゴリの除外候補が出ない | `applyDictionary=false` になっている | `SearchForm` のトグル ON / 辞書ページにエントリ追加 |
@@ -356,7 +387,7 @@ NOTIFY_WEBHOOK_URL=
 ### Phase 3 (要件 v1.1 §10)
 
 - SP-API: `src/lib/spapi/` ディレクトリを作成し `lib/profit.ts` の `estimateFbaFee` を置換
-- Vercel Cron Job 設定: `vercel.json` を追加するか、Vercel ダッシュボードで設定
+- Cron 高頻度化: 現状 GitHub Actions 15min。 Vercel Pro に上げれば 1min も可
 - 通知: `NOTIFY_WEBHOOK_URL` 経由で Slack / Discord に POST
 
 ### Phase 4 (学習ループ)
@@ -374,6 +405,7 @@ NOTIFY_WEBHOOK_URL=
 
 - 要件定義: [`requirements_v1_1_ja.md`](requirements_v1_1_ja.md)
 - 本番セットアップ: [`production-setup-ja.md`](production-setup-ja.md)
+- R6 デプロイ手順書: [`r6-deploy-runbook-ja.md`](r6-deploy-runbook-ja.md)
 - Next.js App Router: https://nextjs.org/docs/app
 - Supabase SSR: https://supabase.com/docs/guides/auth/server-side/nextjs
 - Keepa API: https://keepa.com/#!discuss/t/product-object/116

@@ -437,6 +437,29 @@ export interface MarketAnalysisRow {
   computed_at: string;
 }
 
+// ─── R6: discovery_queue (Cron dispatcher が ingestDiscover を循環実行する) ───
+export type DiscoveryQueueStatus = "pending" | "running" | "done" | "failed";
+
+export interface DiscoveryQueueRow {
+  id: number;
+  category: string;
+  keyword: string | null;
+  min_price: number | null;
+  max_price: number | null;
+  min_reviews: number | null;
+  max_reviews: number | null;
+  per_page: number;
+  enrich: boolean;
+  priority: number;
+  status: DiscoveryQueueStatus;
+  attempts: number;
+  last_error: string | null;
+  last_run_at: string | null;
+  ingested_count: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * watchlist.status → Tier の派生ロジック (R1 で確定)。
  *   sourcing/live → 1 (24h refresh)

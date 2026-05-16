@@ -196,7 +196,34 @@ create table if not exists analysis_threads (
 create index if not exists idx_analysis_threads_asin_created_at
   on analysis_threads (asin, created_at desc);
 
--- updated_at の自動更新トリガ (products / keepa_data / app_settings)
+-- 11) discovery_queue: Cron dispatcher が ingestDiscover を循環実行するためのキュー
+--     詳細は db/migrations/0003_discovery_queue.sql 参照
+create table if not exists discovery_queue (
+  id            bigserial primary key,
+  category      text not null,
+  keyword       text,
+  min_price     integer,
+  max_price     integer,
+  min_reviews   integer,
+  max_reviews   integer,
+  per_page      integer not null default 50,
+  enrich        boolean not null default false,
+  priority      smallint not null default 50,
+  status        text not null default 'pending'
+                  check (status in ('pending','running','done','failed')),
+  attempts      smallint not null default 0,
+  last_error    text,
+  last_run_at   timestamptz,
+  ingested_count integer,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+create index if not exists idx_discovery_queue_next
+  on discovery_queue (status, priority desc, last_run_at nulls first);
+create index if not exists idx_discovery_queue_status
+  on discovery_queue (status);
+
+-- updated_at の自動更新トリガ (products / keepa_data / app_settings / discovery_queue)
 create or replace function set_updated_at()
 returns trigger as $$
 begin
@@ -211,4 +238,8 @@ create trigger products_updated_at before update on products
 
 drop trigger if exists app_settings_updated_at on app_settings;
 create trigger app_settings_updated_at before update on app_settings
+  for each row execute function set_updated_at();
+
+drop trigger if exists discovery_queue_updated_at on discovery_queue;
+create trigger discovery_queue_updated_at before update on discovery_queue
   for each row execute function set_updated_at();

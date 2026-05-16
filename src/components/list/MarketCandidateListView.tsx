@@ -249,7 +249,8 @@ function MarketRow({ r }: { r: MarketCandidateRow }) {
               src={r.imageUrl ?? undefined}
               alt={r.title}
               seed={asinSeed(r.asin)}
-              size={56}
+              label={r.asin.slice(0, 2)}
+              size={72}
             />
             <div className="meta">
               <Link

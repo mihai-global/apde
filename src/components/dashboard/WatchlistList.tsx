@@ -31,7 +31,7 @@ export function WatchlistList({ rows }: WatchlistListProps) {
     <div className="wlist">
       {rows.map((row) => (
         <Link key={row.asin} className="wrow" href={`/products/${row.asin}`}>
-          <Thumbnail src={row.imageUrl} alt={row.title} seed={row.seed} size={40} />
+          <Thumbnail src={row.imageUrl} alt={row.title} seed={row.seed} label={row.asin.slice(0, 2)} size={56} />
           <span>
             <span className="pname">{row.title}</span>
             <br />

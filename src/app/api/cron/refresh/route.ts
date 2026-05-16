@@ -1,28 +1,20 @@
 // POST /api/cron/refresh
 // Header: x-cron-secret: ${CRON_SECRET}
-// GitHub Actions / Supabase pg_cron から呼ぶ Tier-aware リフレッシュ。
 //
-// 流れ:
-//  1) Keepa /token で残量取得 (0 token 消費)
-//  2) budget = min(remaining - 10, 50) (10 は緊急用バッファ)
-//  3) Tier 1 (sourcing/live): keepa_last_diff_at < NOW - 24h を古い順に取り、
-//     1 ASIN ずつ ingestDiff (1 token 消費 / ASIN)
-//  4) budget が残っていれば Tier 2 (candidate, 7d) を処理
-//  5) 完了 ASIN 数 / 残 budget を返す
+// 後方互換用エンドポイント (R5 から残置)。 R6 以降は `/api/cron/dispatch` を
+// 主軸とし、こちらは Tier1/2 リフレッシュのみを実行する。
 //
-// 失敗した ASIN はスキップして次へ進む (cron は best-effort)。
+// 実体は src/lib/keepa/dispatch.ts:runRefreshStage() を呼ぶ薄いラッパ。
+// レスポンスの形は旧バージョンと互換 (tier1.processed / tier2.skipped / tokensBefore など)
+// を保つので、 既存の GitHub Actions workflow (keepa-refresh.yml) はそのまま動く。
 import { env } from "@/lib/env";
 import { fetchKeepaTokenStatus } from "@/lib/keepa/client";
-import { ingestDiff } from "@/lib/keepa/ingest";
-import { listProductsForRefresh } from "@/lib/supabase/repositories";
+import { runRefreshStage } from "@/lib/keepa/dispatch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-// Cron は 30 秒以内に終わる想定だが、 Tier 1+2 で 50 ASIN 回る可能性があるため余裕を持つ
 export const maxDuration = 60;
 
-const TIER1_THRESHOLD_HOURS = 24;
-const TIER2_THRESHOLD_HOURS = 24 * 7;
 const BUDGET_RESERVE = 10;
 const BUDGET_MAX_PER_RUN = 50;
 
@@ -58,7 +50,6 @@ export async function POST(request: Request): Promise<Response> {
     tier2: { processed: 0, skipped: [] },
   };
 
-  // 1) /token で残量を取得
   let tokensLeft = 0;
   try {
     const status = await fetchKeepaTokenStatus();
@@ -75,7 +66,7 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  let budget = Math.max(0, Math.min(tokensLeft - BUDGET_RESERVE, BUDGET_MAX_PER_RUN));
+  const budget = Math.max(0, Math.min(tokensLeft - BUDGET_RESERVE, BUDGET_MAX_PER_RUN));
   summary.budget = budget;
 
   if (budget <= 0) {
@@ -85,55 +76,15 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(summary, { status: 200 });
   }
 
-  const tier1Cutoff = new Date(
-    startedAt.getTime() - TIER1_THRESHOLD_HOURS * 60 * 60 * 1000,
-  ).toISOString();
-  const tier2Cutoff = new Date(
-    startedAt.getTime() - TIER2_THRESHOLD_HOURS * 60 * 60 * 1000,
-  ).toISOString();
+  const refresh = await runRefreshStage(budget, startedAt);
+  summary.tier1 = refresh.tier1;
+  summary.tier2 = refresh.tier2;
 
-  // 2) Tier 1
-  const tier1Asins = await listProductsForRefresh({ tier: 1, olderThan: tier1Cutoff, limit: budget });
-  for (const asin of tier1Asins) {
-    if (budget <= 0) break;
-    try {
-      await ingestDiff(asin);
-      summary.tier1.processed += 1;
-      budget -= 1;
-    } catch (err) {
-      summary.tier1.skipped.push(asin);
-      console.warn("[apde:cron:refresh] tier1 ingestDiff failed", {
-        asin,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // 3) Tier 2
-  if (budget > 0) {
-    const tier2Asins = await listProductsForRefresh({ tier: 2, olderThan: tier2Cutoff, limit: budget });
-    for (const asin of tier2Asins) {
-      if (budget <= 0) break;
-      try {
-        await ingestDiff(asin);
-        summary.tier2.processed += 1;
-        budget -= 1;
-      } catch (err) {
-        summary.tier2.skipped.push(asin);
-        console.warn("[apde:cron:refresh] tier2 ingestDiff failed", {
-          asin,
-          message: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-
-  // 4) /token で残量再取得 (best-effort)
   try {
     const after = await fetchKeepaTokenStatus();
     summary.tokensAfter = after.tokensLeft;
   } catch {
-    summary.tokensAfter = tokensLeft - summary.tier1.processed - summary.tier2.processed;
+    summary.tokensAfter = tokensLeft - (budget - refresh.remainingBudget);
   }
 
   summary.durationMs = Date.now() - startedAt.getTime();

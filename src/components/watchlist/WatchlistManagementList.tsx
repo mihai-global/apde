@@ -99,11 +99,11 @@ export function WatchlistManagementList({ rows }: WatchlistManagementListProps) 
                 key={row.asin}
                 className="wrow"
                 style={{
-                  gridTemplateColumns: "48px 1fr auto 130px 200px 80px",
+                  gridTemplateColumns: "64px 1fr auto 130px 200px 80px",
                   opacity: pendingAsin === row.asin ? 0.6 : 1,
                 }}
               >
-                <Thumbnail src={row.imageUrl} alt={row.title} seed={row.seed} size={40} />
+                <Thumbnail src={row.imageUrl} alt={row.title} seed={row.seed} label={row.asin.slice(0, 2)} size={56} />
                 <span>
                   <Link href={`/products/${row.asin}`} className="pname">{row.title}</Link>
                   <br />

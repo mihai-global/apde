@@ -2,6 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { recomputeMarketAnalysis } from "@/lib/keepa/ingest";
+import {
+  clearDiscoveryQueue as repoClearDiscoveryQueue,
+  enqueueDiscoveryJobs,
+} from "@/lib/supabase/discovery_queue";
+import { CATEGORIES } from "@/lib/keepa/categories";
 import { getServiceRoleSupabase } from "@/lib/supabase/server";
 import { mockMode } from "@/lib/env";
 import { getMockStore } from "@/lib/supabase/mock-store";
@@ -154,4 +159,70 @@ export async function purgeEmptyAsins(): Promise<PurgeEmptyResult> {
   revalidatePath("/diagnostics");
   revalidatePath("/search");
   return { ok: true, deleted: toDelete.length };
+}
+
+// ─── R6: discovery_queue 管理 ──────────────────────────────────────────
+
+export interface EnqueueSeedsResult {
+  ok: boolean;
+  added: number;
+  error?: string;
+}
+
+/**
+ * 14 カテゴリ × 4 価格帯 = 56 エントリの初期 seed を discovery_queue に投入。
+ * 既存と (category, keyword=null, min_price, max_price) が完全一致するエントリは
+ * スキップするので、 何度叩いても重複しない。
+ */
+export async function enqueueDiscoverySeeds(): Promise<EnqueueSeedsResult> {
+  const bands: Array<{ min: number; max: number }> = [
+    { min: 0, max: 2000 },
+    { min: 2000, max: 5000 },
+    { min: 5000, max: 15000 },
+    { min: 15000, max: 50000 },
+  ];
+  const jobs = CATEGORIES.flatMap((c) =>
+    bands.map((b) => ({
+      category: c.label,
+      minPrice: b.min,
+      maxPrice: b.max,
+      perPage: 50,
+      priority: 50,
+    })),
+  );
+
+  try {
+    const added = await enqueueDiscoveryJobs(jobs);
+    revalidatePath("/diagnostics");
+    return { ok: true, added };
+  } catch (err) {
+    return {
+      ok: false,
+      added: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export interface ClearQueueResult {
+  ok: boolean;
+  deleted: number;
+  error?: string;
+}
+
+/**
+ * discovery_queue 全行を削除。 やり直し / リセット用。
+ */
+export async function clearDiscoveryQueue(): Promise<ClearQueueResult> {
+  try {
+    const deleted = await repoClearDiscoveryQueue();
+    revalidatePath("/diagnostics");
+    return { ok: true, deleted };
+  } catch (err) {
+    return {
+      ok: false,
+      deleted: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

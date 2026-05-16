@@ -1,9 +1,48 @@
+import { asinToHslBackground } from "@/lib/keepa/imageUrl";
+
 interface ThumbPlaceholderProps {
+  /** 装飾用バリエーション (0-3 で図形種を切替) */
   seed?: number;
+  /**
+   * 中央に表示する 1-3 文字のテキスト。 ASIN の先頭 2 文字を渡す想定。
+   * 文字色は中間グレー、背景は文字列ハッシュ由来の HSL で識別性を担保。
+   */
   label?: string;
 }
 
+/**
+ * 画像が取得できない時のフォールバック。
+ *  - label 指定時: 文字 + ハッシュ背景色 (R6 で追加)
+ *  - label 未指定: seed 由来の薄い線画 (旧挙動)
+ */
 export function ThumbPlaceholder({ seed = 1, label }: ThumbPlaceholderProps) {
+  if (label && label.length > 0) {
+    const text = label.slice(0, 3).toUpperCase();
+    const bg = asinToHslBackground(label);
+    return (
+      <div
+        className="thumb-placeholder thumb-placeholder--label"
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: bg,
+          color: "#374151",
+          fontSize: "0.85rem",
+          fontWeight: 600,
+          letterSpacing: "0.02em",
+          fontFamily:
+            "ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif",
+        }}
+        aria-hidden="true"
+      >
+        {text}
+      </div>
+    );
+  }
+
   const n = Math.abs(seed) % 4;
   return (
     <div className="thumb-placeholder">
@@ -33,7 +72,6 @@ export function ThumbPlaceholder({ seed = 1, label }: ThumbPlaceholderProps) {
           </g>
         )}
       </svg>
-      {label ? <span style={{ position: "relative" }}>{label}</span> : null}
     </div>
   );
 }

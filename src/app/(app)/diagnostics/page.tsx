@@ -4,12 +4,17 @@
 // 3) 直近の analysis を source 別に集計
 // 4) 任意 ASIN に対する Keepa + LLM の即時プローブ
 import Link from "next/link";
+import { DiscoveryQueuePanel } from "@/components/diagnostics/DiscoveryQueuePanel";
 import { ProbeForm } from "@/components/diagnostics/ProbeForm";
 import { RecomputeAllButton } from "@/components/diagnostics/RecomputeAllButton";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { env, mockMode } from "@/lib/env";
 import { fmtNum, yen } from "@/lib/format";
 import { getLastGeminiError } from "@/lib/llm/gemini";
+import {
+  getDiscoveryQueueCounts,
+  listDiscoveryQueue,
+} from "@/lib/supabase/discovery_queue";
 import {
   getRefreshQueueCounts,
   getStorageCounts,
@@ -57,12 +62,15 @@ function StatusDot({ ok }: { ok: boolean }) {
 }
 
 export default async function DiagnosticsPage() {
-  const [usage, sourceCounts, refreshQueue, storage] = await Promise.all([
-    listApiUsageThisMonth(),
-    getAnalysisSourceCounts(),
-    getRefreshQueueCounts(),
-    getStorageCounts(),
-  ]);
+  const [usage, sourceCounts, refreshQueue, storage, discoveryCounts, discoveryRecent] =
+    await Promise.all([
+      listApiUsageThisMonth(),
+      getAnalysisSourceCounts(),
+      getRefreshQueueCounts(),
+      getStorageCounts(),
+      getDiscoveryQueueCounts(),
+      listDiscoveryQueue(6),
+    ]);
 
   const usageByProvider = new Map<string, { count: number; cost: number; lastAt: string }>();
   for (const row of usage) {
@@ -366,6 +374,16 @@ export default async function DiagnosticsPage() {
               <div className="sub">オンデマンドのみ (cron 対象外)</div>
             </div>
           </div>
+        </section>
+
+        {/* ── R6: Discovery キュー ── */}
+        <section style={{ marginBottom: 56 }}>
+          <div className="eyebrow" style={{ marginBottom: 16 }}>Discovery キュー (新規 ASIN 発掘 cron)</div>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 16, lineHeight: 1.7 }}>
+            /api/cron/dispatch が 15 分毎 (GH Actions) に Tier1/2 リフレッシュ後の余剰 token で 1 ジョブずつ消化します。
+            done でも 24h 経過したら自動で再周回。 14 カテゴリ × 4 価格帯 × 24h ループ ≈ 1 周/日。
+          </p>
+          <DiscoveryQueuePanel counts={discoveryCounts} recent={discoveryRecent} />
         </section>
 
         {/* ── R5: Storage 集計 ── */}

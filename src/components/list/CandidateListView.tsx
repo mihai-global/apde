@@ -204,7 +204,7 @@ function CandidateRow({ c }: { c: DiscoveryCandidate }) {
       <td><DBadge decision={c.decision} /></td>
       <td className="col-title">
         <div className="title-cell">
-          <Thumbnail src={c.imageUrl} alt={c.title} seed={asinSeed(c.asin)} size={56} />
+          <Thumbnail src={c.imageUrl} alt={c.title} seed={asinSeed(c.asin)} label={c.asin.slice(0, 2)} size={72} />
           <div className="meta">
             <Link href={`/products/${c.asin}`} className="pname" onClick={(e) => e.stopPropagation()}>
               {c.title}
@@ -232,7 +232,7 @@ function CandidateCard({ c }: { c: DiscoveryCandidate }) {
   return (
     <Link href={`/products/${c.asin}`} className="pcard">
       <div className="ptop">
-        <Thumbnail src={c.imageUrl} alt={c.title} seed={asinSeed(c.asin)} size={64} />
+        <Thumbnail src={c.imageUrl} alt={c.title} seed={asinSeed(c.asin)} label={c.asin.slice(0, 2)} size={80} />
         <div style={{ flex: 1 }}>
           <DBadge decision={c.decision} />
           <h3 className="ph3" style={{ marginTop: 8 }}>{c.title}</h3>
