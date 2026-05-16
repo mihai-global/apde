@@ -6,6 +6,23 @@ import type { TimeSeriesPoint } from "@/lib/types";
 
 const BASE_URL = "https://api.keepa.com";
 
+/**
+ * Keepa /product?images=1 で返る画像 object。
+ * 新仕様: `images: [{ l, lH, lW, m, mH, mW }, ...]` 配列で返る。
+ * 旧仕様 `imagesCSV` (CSV 文字列) は API バージョンによっては残っているので
+ * 互換性のため両方ハンドリングする。
+ */
+interface KeepaImageObj {
+  /** large (高解像度) filename。 1500-2000px 程度 */
+  l?: string;
+  lH?: number;
+  lW?: number;
+  /** medium filename。 500-800px。 l がない場合はこちらを使う */
+  m?: string;
+  mH?: number;
+  mW?: number;
+}
+
 interface KeepaProductResponse {
   tokensLeft?: number;
   tokensConsumed?: number;
@@ -16,7 +33,10 @@ interface KeepaProductResponse {
     productGroup?: string;
     categoryTree?: Array<{ name?: string }>;
     csv?: Array<number[] | null>;
-    imagesCSV?: string; // 例: "61abc.jpg,62def.jpg,..."
+    /** 新仕様 (現行 Keepa API) */
+    images?: KeepaImageObj[];
+    /** 旧仕様 (一部 endpoint で残っている可能性) */
+    imagesCSV?: string;
     /** Keepa の現在値スナップショット (履歴とは別) */
     stats?: {
       current?: number[]; // index 順は csv と同じ。-1 は欠損
@@ -33,10 +53,31 @@ interface KeepaProductResponse {
   }>;
 }
 
+function filenameToAmazonUrl(file: string): string {
+  // Keepa は basename のみ返す場合と、拡張子付きで返す場合がある。
+  // どちらも m.media-amazon.com/images/I/ の下に存在するので、無ければ .jpg を補う。
+  const name = /\.(jpg|jpeg|png|gif|webp)$/i.test(file) ? file : `${file}.jpg`;
+  return `https://m.media-amazon.com/images/I/${name}`;
+}
+
 /**
- * Keepa imagesCSV をフル URL に変換する。
- * Keepa は filename だけを返すため、Amazon CDN にプレフィックスを付ける必要がある。
- * 戻り値: 各画像の絶対 URL 配列（先頭がメイン画像）
+ * Keepa の `images` 配列をフル URL に変換する。 large 優先、 無ければ medium。
+ */
+export function keepaImagesArrayToUrls(
+  images: KeepaImageObj[] | undefined | null,
+): string[] {
+  if (!Array.isArray(images)) return [];
+  const urls: string[] = [];
+  for (const img of images) {
+    const file = img?.l ?? img?.m;
+    if (typeof file !== "string" || file.length === 0) continue;
+    urls.push(filenameToAmazonUrl(file));
+  }
+  return urls;
+}
+
+/**
+ * Keepa imagesCSV (旧仕様) をフル URL に変換する。 後方互換のため残置。
  */
 export function keepaImagesToUrls(imagesCSV: string | undefined | null): string[] {
   if (!imagesCSV) return [];
@@ -44,12 +85,23 @@ export function keepaImagesToUrls(imagesCSV: string | undefined | null): string[
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
-    .map((file) => {
-      // Keepa は basename のみ返す場合と、拡張子付きで返す場合がある。
-      // どちらも m.media-amazon.com/images/I/ の下に存在するので、無ければ .jpg を補う。
-      const name = /\.(jpg|jpeg|png|gif|webp)$/i.test(file) ? file : `${file}.jpg`;
-      return `https://m.media-amazon.com/images/I/${name}`;
-    });
+    .map(filenameToAmazonUrl);
+}
+
+/**
+ * 統合 helper: 新仕様 `images` 配列を優先、 無ければ旧仕様 `imagesCSV` を見る。
+ * ingestDiscover / ingestDiff / ingestFull の 3 経路すべてで使う。
+ */
+export function extractKeepaImageUrls(
+  raw:
+    | { images?: KeepaImageObj[]; imagesCSV?: string }
+    | null
+    | undefined,
+): string[] {
+  if (!raw) return [];
+  const fromArray = keepaImagesArrayToUrls(raw.images);
+  if (fromArray.length > 0) return fromArray;
+  return keepaImagesToUrls(raw.imagesCSV);
 }
 
 const ARRAY_INDEX = {
@@ -182,6 +234,7 @@ interface KeepaSearchResponse {
     asin: string;
     title?: string;
     brand?: string;
+    images?: KeepaImageObj[];
     imagesCSV?: string;
   }>;
 }
@@ -197,6 +250,7 @@ interface KeepaQueryResponse {
     brand?: string;
     productGroup?: string;
     categoryTree?: Array<{ name?: string }>;
+    images?: KeepaImageObj[];
     imagesCSV?: string;
     packageWeight?: number;
     itemWeight?: number;
@@ -244,7 +298,7 @@ export async function searchKeepa(term: string, limit = 10): Promise<KeepaSearch
         asin: p.asin,
         title: p.title,
         brand: p.brand,
-        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+        imageUrl: extractKeepaImageUrls(p)[0],
       }));
     if (hits.length > 0) return hits;
     console.warn("[apde:keepa:search] products[] had no usable asin field", { term });
@@ -378,7 +432,7 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
         asin: p.asin,
         title: p.title,
         brand: p.brand,
-        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+        imageUrl: extractKeepaImageUrls(p)[0],
         category: categoryName ?? p.productGroup,
         weightGrams,
         monthlySold:
@@ -428,23 +482,11 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
     const data: KeepaProductResponse = await res.json();
     void usage.keepa("/product (bulk)", data.tokensConsumed ?? chunk.length);
     const products = data.products ?? [];
-    // R7 debug: bulk /product?images=1 で imagesCSV が返ってきているか確認するための
-    // 一時ログ。 最初の 1 件だけ keys と imagesCSV の長さを出す。
-    // 原因特定後にこの 1 ブロックは削除する。
-    const first = products[0] as (typeof products)[number] & {
-      imagesCSV?: string;
-      image?: string;
-      images?: string;
-    } | undefined;
     console.info("[apde:keepa:bulk-product]", {
       requested: chunk.length,
       returned: products.length,
       tokensConsumed: data.tokensConsumed,
       durationMs: Date.now() - start,
-      firstAsin: first?.asin,
-      firstHasImagesCSV: first?.imagesCSV !== undefined,
-      firstImagesCSVLength: typeof first?.imagesCSV === "string" ? first.imagesCSV.length : null,
-      firstKeys: first ? Object.keys(first).slice(0, 30) : null,
     });
     for (const p of products) {
       if (typeof p.asin !== "string" || p.asin.length === 0) continue;
@@ -464,7 +506,7 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
         asin: p.asin,
         title: p.title,
         brand: p.brand,
-        imageUrl: keepaImagesToUrls(p.imagesCSV)[0],
+        imageUrl: extractKeepaImageUrls(p)[0],
         category: categoryName ?? p.productGroup,
         weightGrams,
         monthlySold:
@@ -574,7 +616,7 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
   if (!product) throw new Error("Keepa returned empty product");
 
   const csv = product.csv ?? [];
-  const imageUrls = keepaImagesToUrls(product.imagesCSV);
+  const imageUrls = extractKeepaImageUrls(product);
   const categoryName = product.categoryTree?.[product.categoryTree.length - 1]?.name;
   const weightDecigrams = product.packageWeight ?? product.itemWeight;
   const weightGrams = typeof weightDecigrams === "number" && weightDecigrams > 0
