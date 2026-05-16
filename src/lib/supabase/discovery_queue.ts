@@ -236,6 +236,71 @@ export async function pickNextDiscoveryJob(): Promise<DiscoveryQueueRow | null> 
   return (data as DiscoveryQueueRow | null) ?? null;
 }
 
+// ─── peek (status flip なし、 UI 用) ────────────────────────────────────
+
+/**
+ * `pickNextDiscoveryJob` と同じ優先順位で N 件先読み。 status は flip しない。
+ * `/discovery` の「次に取得予定 Top 5」用。
+ *
+ * 並び順:
+ *  1. status='pending' で priority desc → last_run_at nulls first
+ *  2. status='done' AND last_run_at < NOW() - 24h (循環) を 1. の続きで
+ * 上限 limit 件、 attempts >= MAX_ATTEMPTS は除外。
+ */
+export async function peekNextDiscoveryJobs(limit = 5): Promise<DiscoveryQueueRow[]> {
+  const safeLimit = Math.min(Math.max(limit, 1), 50);
+  const cutoff = new Date(Date.now() - DONE_RECYCLE_HOURS * 60 * 60 * 1000).toISOString();
+
+  const sortByPriority = (a: DiscoveryQueueRow, b: DiscoveryQueueRow): number => {
+    if (b.priority !== a.priority) return b.priority - a.priority;
+    return (a.last_run_at ?? "").localeCompare(b.last_run_at ?? "");
+  };
+
+  if (mockMode.supabase) {
+    const q = getMockQueue();
+    const pending = q.rows
+      .filter((r) => r.status === "pending" && r.attempts < MAX_ATTEMPTS)
+      .sort(sortByPriority);
+    const dueDone = q.rows
+      .filter(
+        (r) =>
+          r.status === "done" &&
+          r.attempts < MAX_ATTEMPTS &&
+          (r.last_run_at === null || r.last_run_at < cutoff),
+      )
+      .sort(sortByPriority);
+    return [...pending, ...dueDone].slice(0, safeLimit).map((r) => ({ ...r }));
+  }
+
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return [];
+
+  const fetchByStatus = async (
+    status: DiscoveryQueueStatus,
+  ): Promise<DiscoveryQueueRow[]> => {
+    let q = supabase
+      .from(TABLE)
+      .select("*")
+      .eq("status", status)
+      .lt("attempts", MAX_ATTEMPTS)
+      .order("priority", { ascending: false })
+      .order("last_run_at", { ascending: true, nullsFirst: true })
+      .limit(safeLimit);
+    if (status === "done") q = q.lt("last_run_at", cutoff);
+    const { data, error } = await q;
+    if (error) {
+      console.warn("[apde] peekNextDiscoveryJobs select failed", { status, error });
+      return [];
+    }
+    return (data ?? []) as DiscoveryQueueRow[];
+  };
+
+  const pending = await fetchByStatus("pending");
+  if (pending.length >= safeLimit) return pending.slice(0, safeLimit);
+  const dueDone = await fetchByStatus("done");
+  return [...pending, ...dueDone].slice(0, safeLimit);
+}
+
 // ─── done ────────────────────────────────────────────────────────────
 
 export async function markDiscoveryJobDone(id: number, ingestedCount: number): Promise<void> {

@@ -8,6 +8,7 @@ import { getBrowserSupabase } from "@/lib/supabase/browser";
 const NAV: ReadonlyArray<{ href: string; label: string; matchPrefix?: string }> = [
   { href: "/", label: "ダッシュボード" },
   { href: "/search", label: "探索", matchPrefix: "/search" },
+  { href: "/discovery", label: "進捗", matchPrefix: "/discovery" },
   { href: "/watchlist", label: "監視リスト" },
   { href: "/dictionary", label: "辞書" },
   { href: "/diagnostics", label: "診断", matchPrefix: "/diagnostics" },

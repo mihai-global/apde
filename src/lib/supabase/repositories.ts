@@ -802,14 +802,16 @@ export interface MarketAnalysisFilter {
   maxReviews?: number;        // count_reviews <=
   category?: string;          // products.category 一致 (将来 category_tree @> JSON にする)
   decision?: MarketDecision;
-  limit?: number;
+  limit?: number;             // default 50 (R7 で 200 → 50。 "もっと見る" でページング)
+  offset?: number;            // R7 追加。 ページネーション用、 default 0
 }
 
 /** market_score 降順で candidate を返す。 R2 (DB-only Search) の主クエリ。 */
 export async function listMarketAnalysis(
   filter: MarketAnalysisFilter = {},
 ): Promise<Array<MarketAnalysisRow & { snapshot: KeepaSnapshotRow | null; product: { title: string; category: string; brand: string | null; image_url: string | null } | null }>> {
-  const limit = Math.min(Math.max(filter.limit ?? 200, 1), 500);
+  const limit = Math.min(Math.max(filter.limit ?? 50, 1), 500);
+  const offset = Math.max(filter.offset ?? 0, 0);
 
   if (mockMode.supabase) {
     const store = getMockStore();
@@ -828,7 +830,7 @@ export async function listMarketAnalysis(
       return true;
     });
     rows.sort((a, b) => (b.market_score ?? 0) - (a.market_score ?? 0));
-    return rows.slice(0, limit).map((r) => {
+    return rows.slice(offset, offset + limit).map((r) => {
       const prod = store.products.get(r.asin);
       return {
         ...r,
@@ -847,11 +849,15 @@ export async function listMarketAnalysis(
 
   const supabase = getServiceRoleSupabase();
   if (!supabase) return [];
-  // 1) market_analysis をスコア順にスライス
+  // 1) market_analysis をスコア順にスライス。
+  //    range(offset, offset+limit-1) で offset/limit を Supabase 側に渡す。
+  //    NOTE: minScore/decision は SQL 段でフィルタされるが、 price/reviews/category は
+  //    post-filter のため、 offset 跨ぎで「数件抜ける」可能性がある。 R7 では実用上問題ない
+  //    範囲なので簡易実装。 厳密化が必要なら materialize view で post-filter を SQL 化。
   let q = supabase.from("market_analysis").select("*").order("market_score", { ascending: false });
   if (filter.minScore !== undefined) q = q.gte("market_score", filter.minScore);
   if (filter.decision) q = q.eq("decision", filter.decision);
-  q = q.limit(limit);
+  q = q.range(offset, offset + limit - 1);
   const { data: maRows, error } = await q;
   if (error) {
     console.warn("[apde] listMarketAnalysis failed", error);

@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import { MonthlySalesProvenance } from "@/components/primitives/MonthlySalesProvenance";
 import { ScoreBar } from "@/components/primitives/ScoreBar";
 import { Thumbnail } from "@/components/primitives/Thumbnail";
-import { Chip } from "@/components/primitives/Chip";
 import { Seg } from "@/components/primitives/Seg";
 import { fmtNum, yen } from "@/lib/format";
 import type { MarketDecision } from "@/lib/types";
@@ -43,7 +42,6 @@ interface MarketCandidateListViewProps {
 }
 
 type SortKey = "score" | "oem" | "demand" | "profit" | "price" | "review";
-type FilterKey = "all" | MarketDecision;
 
 const DECISION_LABEL: Record<MarketDecision, string> = {
   go: "GO",
@@ -68,10 +66,9 @@ export function MarketCandidateListView({
   showSummary = true,
 }: MarketCandidateListViewProps) {
   const [sort, setSort] = useState<SortKey>("score");
-  const [filter, setFilter] = useState<FilterKey>("all");
 
   const filtered = useMemo(() => {
-    const arr = filter === "all" ? [...rows] : rows.filter((r) => r.decision === filter);
+    const arr = [...rows];
     arr.sort((a, b) => {
       switch (sort) {
         case "score":
@@ -91,7 +88,7 @@ export function MarketCandidateListView({
       }
     });
     return arr;
-  }, [rows, filter, sort]);
+  }, [rows, sort]);
 
   const summary = useMemo(() => {
     let go = 0, cond = 0, no = 0;
@@ -168,13 +165,6 @@ export function MarketCandidateListView({
       ) : null}
 
       <div className="rowsplit" style={{ marginBottom: 16, gap: 16, flexWrap: "wrap" }}>
-        <div className="cluster">
-          <span className="eyebrow" style={{ marginRight: 4 }}>判定</span>
-          <Chip active={filter === "all"} onClick={() => setFilter("all")}>すべて</Chip>
-          <Chip active={filter === "go"} onClick={() => setFilter("go")}>GO</Chip>
-          <Chip active={filter === "cond"} onClick={() => setFilter("cond")}>条件付き</Chip>
-          <Chip active={filter === "no_go"} onClick={() => setFilter("no_go")}>NO-GO</Chip>
-        </div>
         <div className="cluster">
           <Seg<SortKey>
             value={sort}

@@ -2,6 +2,7 @@
 // 主動作は market_analysis テーブルから市場魅力度ランキングを取得して表示。
 // 「新カテゴリ調査」ボタンでモーダルを開き、 Keepa /query を 1 コール叩いて
 // 新しい候補を DB に追加する。 通常の閲覧では Keepa を呼ばない。
+import Link from "next/link";
 import { Crumbs } from "@/components/shell/Crumbs";
 import { DiscoverButton } from "@/components/search/DiscoverButton";
 import { ScoreSlider } from "@/components/search/ScoreSlider";
@@ -9,6 +10,7 @@ import {
   MarketCandidateListView,
   type MarketCandidateRow,
 } from "@/components/list/MarketCandidateListView";
+import { CATEGORIES } from "@/lib/keepa/categories";
 import { listDiscoveryRuns, listMarketAnalysis } from "@/lib/supabase/repositories";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +18,9 @@ export const dynamic = "force-dynamic";
 // ここの maxDuration がアクション実行時間の上限になる。
 // Vercel Hobby の上限は 60s。 100 件並列 ingest で ~10-15s 掛かる想定。
 export const maxDuration = 60;
+
+/** 1 ページあたりの市場魅力度ランキング件数 (R7 で 200 → 50)。 */
+const PAGE_SIZE = 50;
 
 interface SearchPageProps {
   searchParams: Promise<{
@@ -25,6 +30,7 @@ interface SearchPageProps {
     minScore?: string;
     decision?: string;
     category?: string;
+    offset?: string;
   }>;
 }
 
@@ -32,6 +38,28 @@ function parseInt32(value: string | undefined): number | undefined {
   if (typeof value !== "string") return undefined;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined;
+}
+
+/** 現在のフィルタ条件を保持しつつ、 offset だけ差し替えた querystring を作る。 */
+function buildHref(params: {
+  minPrice?: number;
+  maxPrice?: number;
+  maxReviews?: number;
+  minScore?: number;
+  decision?: "go" | "cond" | "no_go";
+  category?: string;
+  offset?: number;
+}): string {
+  const sp = new URLSearchParams();
+  if (typeof params.minPrice === "number") sp.set("minPrice", String(params.minPrice));
+  if (typeof params.maxPrice === "number") sp.set("maxPrice", String(params.maxPrice));
+  if (typeof params.maxReviews === "number") sp.set("maxReviews", String(params.maxReviews));
+  if (typeof params.minScore === "number") sp.set("minScore", String(params.minScore));
+  if (params.decision) sp.set("decision", params.decision);
+  if (params.category) sp.set("category", params.category);
+  if (typeof params.offset === "number" && params.offset > 0) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return qs ? `/search?${qs}` : "/search";
 }
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {
@@ -45,6 +73,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       ? params.decision
       : undefined;
   const category = typeof params.category === "string" && params.category.trim() ? params.category.trim() : undefined;
+  const offset = parseInt32(params.offset) ?? 0;
 
   const [marketRows, recentRuns] = await Promise.all([
     listMarketAnalysis({
@@ -54,7 +83,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       minScore,
       decision,
       category,
-      limit: 200,
+      limit: PAGE_SIZE,
+      offset,
     }),
     listDiscoveryRuns(3),
   ]);
@@ -82,6 +112,10 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     weightG: r.snapshot?.package_weight_g ?? null,
     fetchedAt: r.snapshot?.fetched_at ?? null,
   }));
+
+  // ページング: 返ってきた件数が PAGE_SIZE と等しければ次ページが存在する可能性がある。
+  const hasNext = rows.length >= PAGE_SIZE;
+  const hasPrev = offset > 0;
 
   return (
     <main className="page">
@@ -114,6 +148,55 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         />
 
         <MarketCandidateListView rows={rows} />
+
+        {(hasPrev || hasNext) ? (
+          <div
+            className="cluster"
+            style={{
+              marginTop: 24,
+              display: "flex",
+              gap: 12,
+              justifyContent: "center",
+              alignItems: "center",
+            }}
+          >
+            {hasPrev ? (
+              <Link
+                href={buildHref({
+                  minPrice,
+                  maxPrice,
+                  maxReviews,
+                  minScore,
+                  decision,
+                  category,
+                  offset: Math.max(offset - PAGE_SIZE, 0),
+                })}
+                className="pill"
+              >
+                <span className="arrow">‹</span> 前へ
+              </Link>
+            ) : null}
+            <span className="muted" style={{ fontSize: 12 }}>
+              {offset + 1}–{offset + rows.length} 件目
+            </span>
+            {hasNext ? (
+              <Link
+                href={buildHref({
+                  minPrice,
+                  maxPrice,
+                  maxReviews,
+                  minScore,
+                  decision,
+                  category,
+                  offset: offset + PAGE_SIZE,
+                })}
+                className="pill solid"
+              >
+                もっと見る (+{PAGE_SIZE}) <span className="arrow">›</span>
+              </Link>
+            ) : null}
+          </div>
+        ) : null}
 
         {recentRuns.length > 0 ? (
           <section style={{ marginTop: 56 }}>
@@ -160,7 +243,8 @@ interface FilterStripProps {
 
 /**
  * URL パラメータ駆動のシンプルフィルタ。 GET フォームで送信し、 server component が再描画される。
- * R3 で score slider / live filter UI に拡張する余地を残す。
+ * R7 で カテゴリ drop-down と判定 drop-down をサーバサイド (URL params) に統一。
+ * 送信時に offset は維持しない (新フィルタ適用時は先頭ページに戻す)。
  */
 function FilterStrip(props: FilterStripProps) {
   return (
@@ -168,7 +252,7 @@ function FilterStrip(props: FilterStripProps) {
       method="get"
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(5, minmax(0, 1fr)) auto",
+        gridTemplateColumns: "repeat(6, minmax(0, 1fr)) auto",
         gap: 12,
         padding: 16,
         marginBottom: 24,
@@ -176,6 +260,22 @@ function FilterStrip(props: FilterStripProps) {
         background: "var(--bg-1)",
       }}
     >
+      <div>
+        <label className="label" htmlFor="f-category">カテゴリ</label>
+        <select
+          id="f-category"
+          name="category"
+          className="select"
+          defaultValue={props.category ?? ""}
+        >
+          <option value="">すべて</option>
+          {CATEGORIES.map((c) => (
+            <option key={c.id} value={c.label}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
       <div>
         <label className="label" htmlFor="f-minPrice">価格 下限</label>
         <input
@@ -225,9 +325,6 @@ function FilterStrip(props: FilterStripProps) {
         </select>
       </div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-        {props.category ? (
-          <input type="hidden" name="category" value={props.category} />
-        ) : null}
         <button type="submit" className="pill solid">
           適用
         </button>

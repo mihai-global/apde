@@ -7,6 +7,7 @@ import {
   enqueueDiscoveryJobs,
 } from "@/lib/supabase/discovery_queue";
 import { CATEGORIES } from "@/lib/keepa/categories";
+import { PRICE_BANDS } from "@/lib/keepa/price-bands";
 import { getServiceRoleSupabase } from "@/lib/supabase/server";
 import { mockMode } from "@/lib/env";
 import { getMockStore } from "@/lib/supabase/mock-store";
@@ -175,14 +176,10 @@ export interface EnqueueSeedsResult {
  * スキップするので、 何度叩いても重複しない。
  */
 export async function enqueueDiscoverySeeds(): Promise<EnqueueSeedsResult> {
-  const bands: Array<{ min: number; max: number }> = [
-    { min: 0, max: 2000 },
-    { min: 2000, max: 5000 },
-    { min: 5000, max: 15000 },
-    { min: 15000, max: 50000 },
-  ];
+  // R7: PRICE_BANDS (src/lib/keepa/price-bands.ts) を一次ソースに統一。
+  // db/discovery_seed.sql の 4 バンドと完全一致させること。
   const jobs = CATEGORIES.flatMap((c) =>
-    bands.map((b) => ({
+    PRICE_BANDS.map((b) => ({
       category: c.label,
       minPrice: b.min,
       maxPrice: b.max,
