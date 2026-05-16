@@ -25,8 +25,10 @@ const TIER1_THRESHOLD_HOURS = 24;
 const TIER2_THRESHOLD_HOURS = 24 * 7;
 const BUDGET_RESERVE = 10;
 const BUDGET_MAX_PER_RUN = 50;
-/** Discovery を発火するために残しておきたい token 数 (/query 1 call ≈ 5-10) */
-const MIN_DISCOVERY_BUDGET = 8;
+/** /query 1 call の概算 token (実測 ~10)。 残 budget からこれを差し引いた分が enrich に回せる */
+const QUERY_TOKEN_RESERVE = 10;
+/** Discovery を発火するために残しておきたい token 数。 /query (10) + 最低 10 件 enrich を満たす */
+const MIN_DISCOVERY_BUDGET = 20;
 
 export interface RefreshStageSummary {
   tier1: { processed: number; skipped: string[] };
@@ -132,10 +134,13 @@ export async function runDiscoveryStage(
   }
   summary.pickedJob = { id: job.id, category: job.category, keyword: job.keyword };
 
-  // /query の perPage は budget を意識して制限。
-  // 1 page ≈ 100 件、 1 query call ≈ 5-10 token 程度なので budget の範囲を超えない範囲で
-  // 取得し、 enrich=false なら追加 token は発生しない。
-  const perPage = Math.min(job.per_page, 100);
+  // Keepa /query は asinList だけ返すケースがあり、 enrich=false だと title/price が空の
+  // まま 50 件全部弾かれる (実測値: ingested=0 skipped=50)。 そのため discovery では
+  // **enrich を強制 ON** にし、 perPage は残 budget - /query 概算 で頭打ちにする。
+  //   /query: ~10 token, enrich: 1 token/ASIN なので
+  //   perPage = budget - 10 が enrich できる件数の上限。
+  const enrichBudget = Math.max(0, budget - QUERY_TOKEN_RESERVE);
+  const perPage = Math.min(job.per_page, enrichBudget, 100);
 
   try {
     const result = await ingestDiscover({
@@ -146,7 +151,7 @@ export async function runDiscoveryStage(
       minReviews: job.min_reviews ?? undefined,
       maxReviews: job.max_reviews ?? undefined,
       perPage,
-      enrich: job.enrich,
+      enrich: true, // /query が asinList のみ返した場合に備え、 常に詳細を取りに行く
     });
 
     if (result.refusedReason) {
@@ -162,9 +167,9 @@ export async function runDiscoveryStage(
     await markDiscoveryJobDone(job.id, result.ingested);
 
     // 消費 token の正確な値は ingestDiscover 戻り値だけからは出ないので、
-    // 控えめに「/query 1 call + (enrich ? 件数 : 0)」を概算消費する。
+    // 「/query 1 call + enrich した件数」を概算消費する。
     // 実 budget の正確な追跡は最後の /token 再取得で吸収する。
-    const estimated = 10 + (job.enrich ? result.ingested : 0);
+    const estimated = QUERY_TOKEN_RESERVE + result.ingested;
     return { ...summary, budgetUsed: estimated, remainingBudget: Math.max(0, budget - estimated) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
