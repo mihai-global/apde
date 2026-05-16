@@ -428,11 +428,23 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
     const data: KeepaProductResponse = await res.json();
     void usage.keepa("/product (bulk)", data.tokensConsumed ?? chunk.length);
     const products = data.products ?? [];
+    // R7 debug: bulk /product?images=1 で imagesCSV が返ってきているか確認するための
+    // 一時ログ。 最初の 1 件だけ keys と imagesCSV の長さを出す。
+    // 原因特定後にこの 1 ブロックは削除する。
+    const first = products[0] as (typeof products)[number] & {
+      imagesCSV?: string;
+      image?: string;
+      images?: string;
+    } | undefined;
     console.info("[apde:keepa:bulk-product]", {
       requested: chunk.length,
       returned: products.length,
       tokensConsumed: data.tokensConsumed,
       durationMs: Date.now() - start,
+      firstAsin: first?.asin,
+      firstHasImagesCSV: first?.imagesCSV !== undefined,
+      firstImagesCSVLength: typeof first?.imagesCSV === "string" ? first.imagesCSV.length : null,
+      firstKeys: first ? Object.keys(first).slice(0, 30) : null,
     });
     for (const p of products) {
       if (typeof p.asin !== "string" || p.asin.length === 0) continue;
