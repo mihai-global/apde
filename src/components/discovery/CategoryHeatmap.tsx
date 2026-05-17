@@ -146,12 +146,11 @@ export function CategoryHeatmap({ cells }: Props) {
 }
 
 const headerCellBase: CSSProperties = {
-  padding: "12px 14px",
-  fontSize: 12,
-  fontWeight: 500,
-  letterSpacing: "0.14em",
-  textTransform: "uppercase",
-  color: "var(--fg-3)",
+  padding: "14px 16px",
+  fontSize: 16,
+  fontWeight: 600,
+  letterSpacing: "0.04em",
+  color: "var(--fg-2)",
   background: "var(--bg-2)",
   border: "1px solid var(--border-1)",
   textAlign: "center",
@@ -192,8 +191,8 @@ function CategoryRow({ label, cells, max }: CategoryRowProps) {
       <div
         style={{
           padding: "16px 14px",
-          fontSize: 14,
-          fontWeight: 500,
+          fontSize: 16,
+          fontWeight: 600,
           color: "var(--fg-1)",
           background: "var(--bg-1)",
           border: "1px solid var(--border-1)",

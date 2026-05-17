@@ -1,13 +1,21 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import {
+  fetchKeepaProductsBatch,
+  fetchKeepaTokenStatus,
+} from "@/lib/keepa/client";
 import { recomputeMarketAnalysis } from "@/lib/keepa/ingest";
+import {
+  CATEGORIES,
+  resolveRootCategoryLabel,
+} from "@/lib/keepa/categories";
+import { PRICE_BANDS } from "@/lib/keepa/price-bands";
 import {
   clearDiscoveryQueue as repoClearDiscoveryQueue,
   enqueueDiscoveryJobs,
 } from "@/lib/supabase/discovery_queue";
-import { CATEGORIES } from "@/lib/keepa/categories";
-import { PRICE_BANDS } from "@/lib/keepa/price-bands";
+import { upsertProductMaster } from "@/lib/supabase/repositories";
 import { getServiceRoleSupabase } from "@/lib/supabase/server";
 import { mockMode } from "@/lib/env";
 import { getMockStore } from "@/lib/supabase/mock-store";
@@ -222,4 +230,155 @@ export async function clearDiscoveryQueue(): Promise<ClearQueueResult> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+// ─── R7: 既存 products のカテゴリを root ラベルに正規化 ───────────────────
+
+export interface ReclassifyResult {
+  ok: boolean;
+  /** 検出された "leaf カテゴリ" の総件数 */
+  total: number;
+  /** Keepa で root を引いて category 上書きできた件数 */
+  updated: number;
+  /** Keepa から rootCategory が返らず保留した件数 */
+  skipped: number;
+  /** 概算消費 token (= 処理した ASIN 数) */
+  tokensUsed: number;
+  /** 処理後の残 token (best-effort) */
+  tokensLeft: number;
+  /** 全 ASIN を処理しきれずに残っている件数 (再実行で続きを処理可能) */
+  remaining: number;
+  error?: string;
+}
+
+/**
+ * `products.category` が 14 root ラベルのいずれでもない (= leaf カテゴリ or 「未分類」)
+ * 行を対象に、 Keepa /product?asin=...&history=0&images=0 を 100 ASIN ずつ叩いて
+ * rootCategory ID を取得 → root ラベルに上書きする。
+ *
+ * 1 ASIN ≈ 1 token 消費するので、 残 token を見ながら処理し、 終わらなければ
+ * remaining > 0 で返す。 ユーザーは時間を空けて再実行する想定。
+ */
+export async function reclassifyProductCategories(): Promise<ReclassifyResult> {
+  const empty: ReclassifyResult = {
+    ok: false,
+    total: 0,
+    updated: 0,
+    skipped: 0,
+    tokensUsed: 0,
+    tokensLeft: 0,
+    remaining: 0,
+  };
+
+  if (mockMode.supabase) {
+    return { ...empty, ok: false, error: "mockMode では実行できません (Keepa 実 API が必要)" };
+  }
+  const supabase = getServiceRoleSupabase();
+  if (!supabase) return { ...empty, error: "Supabase service role client unavailable" };
+
+  // 1) root ラベル候補
+  const knownRoots = new Set(CATEGORIES.map((c) => c.label));
+
+  // 2) leaf 行を取得 (= category が known root に入っていない)
+  const { data: allRows, error: e1 } = await supabase
+    .from("products")
+    .select("asin,category")
+    .order("updated_at", { ascending: false });
+  if (e1) return { ...empty, error: e1.message };
+
+  const leaves = ((allRows ?? []) as Array<{ asin: string; category: string }>).filter(
+    (r) => !knownRoots.has(r.category),
+  );
+
+  if (leaves.length === 0) {
+    revalidatePath("/diagnostics");
+    revalidatePath("/discovery");
+    return {
+      ok: true,
+      total: 0,
+      updated: 0,
+      skipped: 0,
+      tokensUsed: 0,
+      tokensLeft: 0,
+      remaining: 0,
+    };
+  }
+
+  // 3) token 残量を見て、 (残 - 5 緊急用) ASIN 分まで処理する。
+  let tokensLeft = 0;
+  try {
+    const status = await fetchKeepaTokenStatus();
+    tokensLeft = status.tokensLeft;
+  } catch (err) {
+    return { ...empty, total: leaves.length, error: `token status failed: ${String(err)}` };
+  }
+  const budget = Math.max(0, tokensLeft - 5);
+  if (budget <= 0) {
+    return {
+      ok: false,
+      total: leaves.length,
+      updated: 0,
+      skipped: 0,
+      tokensUsed: 0,
+      tokensLeft,
+      remaining: leaves.length,
+      error: `Keepa token 不足 (left=${tokensLeft})。 補充後に再実行してください`,
+    };
+  }
+
+  const targets = leaves.slice(0, budget);
+
+  // 4) 100 ASIN ずつ bulk /product で root を引く
+  let updated = 0;
+  let skipped = 0;
+  let tokensUsed = 0;
+  const CHUNK = 100;
+  for (let i = 0; i < targets.length; i += CHUNK) {
+    const chunkAsins = targets.slice(i, i + CHUNK).map((r) => r.asin);
+    try {
+      const products = await fetchKeepaProductsBatch(chunkAsins);
+      tokensUsed += chunkAsins.length;
+      for (const p of products) {
+        const rootLabel = resolveRootCategoryLabel(p.rootCategoryId);
+        if (!rootLabel) {
+          skipped += 1;
+          continue;
+        }
+        await upsertProductMaster({ asin: p.asin, category: rootLabel });
+        updated += 1;
+      }
+      // bulk が返した products に無かった ASIN (= 期限切れ ASIN 等) は skip カウント
+      const returnedAsins = new Set(products.map((p) => p.asin));
+      for (const a of chunkAsins) if (!returnedAsins.has(a)) skipped += 1;
+    } catch (err) {
+      console.warn("[apde:diag:reclassify] chunk failed", {
+        chunkStart: i,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      skipped += chunkAsins.length;
+    }
+  }
+
+  // 5) 最終 token を best-effort で再取得
+  let tokensLeftAfter = tokensLeft - tokensUsed;
+  try {
+    const after = await fetchKeepaTokenStatus();
+    tokensLeftAfter = after.tokensLeft;
+  } catch {
+    // best-effort
+  }
+
+  revalidatePath("/diagnostics");
+  revalidatePath("/discovery");
+  revalidatePath("/search");
+
+  return {
+    ok: true,
+    total: leaves.length,
+    updated,
+    skipped,
+    tokensUsed,
+    tokensLeft: tokensLeftAfter,
+    remaining: leaves.length - updated - skipped,
+  };
 }
