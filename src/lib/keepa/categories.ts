@@ -45,3 +45,13 @@ export function findCategory(idOrLabel: string): AppCategory | undefined {
 }
 
 export const DEFAULT_CATEGORY: AppCategory = CATEGORIES[0]!;
+
+/**
+ * Keepa の rootCategory (数値 ID) から、 14 カテゴリの label を逆引きする。
+ * `products.category` を統一する目的で ingestDiscover / ingestDiff が使う。
+ * 該当なし (Keepa 側で別 root を返してきた場合) は undefined。
+ */
+export function resolveRootCategoryLabel(rootId: number | undefined | null): string | undefined {
+  if (typeof rootId !== "number") return undefined;
+  return CATEGORIES.find((c) => c.keepaRootCategory === rootId)?.label;
+}

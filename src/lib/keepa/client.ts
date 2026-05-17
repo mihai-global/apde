@@ -32,6 +32,8 @@ interface KeepaProductResponse {
     brand?: string;
     productGroup?: string;
     categoryTree?: Array<{ name?: string }>;
+    /** Keepa のルートカテゴリ ID。 CATEGORIES.keepaRootCategory と一致 */
+    rootCategory?: number;
     csv?: Array<number[] | null>;
     /** 新仕様 (現行 Keepa API) */
     images?: KeepaImageObj[];
@@ -144,6 +146,8 @@ export interface KeepaSeries {
   title?: string;
   brand?: string;
   category?: string;
+  /** Keepa のルートカテゴリ ID (数値)。 14 root の判定に使う */
+  rootCategoryId?: number;
   /** 商品スペック (履歴ではない現在値スナップショット) */
   weightGrams?: number;
   /** 直近 30 日の推定販売数 */
@@ -212,6 +216,8 @@ export interface KeepaProduct {
   brand?: string;
   imageUrl?: string;
   category?: string;
+  /** Keepa のルートカテゴリ ID (数値)。 CATEGORIES.keepaRootCategory と一致する。 */
+  rootCategoryId?: number;
   weightGrams?: number;
   /** Keepa 推定の直近 30 日販売数。 -1 なら不明。 */
   monthlySold?: number;
@@ -250,6 +256,8 @@ interface KeepaQueryResponse {
     brand?: string;
     productGroup?: string;
     categoryTree?: Array<{ name?: string }>;
+    /** Keepa のルートカテゴリ ID (数値)。 CATEGORIES.keepaRootCategory と一致 */
+    rootCategory?: number;
     images?: KeepaImageObj[];
     imagesCSV?: string;
     packageWeight?: number;
@@ -434,6 +442,7 @@ export async function findProductsByCategory(input: FindProductsInput): Promise<
         brand: p.brand,
         imageUrl: extractKeepaImageUrls(p)[0],
         category: categoryName ?? p.productGroup,
+        rootCategoryId: typeof p.rootCategory === "number" ? p.rootCategory : undefined,
         weightGrams,
         monthlySold:
           typeof p.monthlySold === "number" && p.monthlySold >= 0 ? p.monthlySold : undefined,
@@ -508,6 +517,7 @@ export async function fetchKeepaProductsBatch(asins: string[]): Promise<KeepaPro
         brand: p.brand,
         imageUrl: extractKeepaImageUrls(p)[0],
         category: categoryName ?? p.productGroup,
+        rootCategoryId: typeof p.rootCategory === "number" ? p.rootCategory : undefined,
         weightGrams,
         monthlySold:
           typeof p.monthlySold === "number" && p.monthlySold >= 0 ? p.monthlySold : undefined,
@@ -640,6 +650,7 @@ export async function fetchKeepaSeries(asin: string): Promise<KeepaSeries> {
     title: product.title,
     brand: product.brand,
     category: categoryName ?? product.productGroup,
+    rootCategoryId: typeof product.rootCategory === "number" ? product.rootCategory : undefined,
     weightGrams,
     monthlySold: typeof product.monthlySold === "number" && product.monthlySold >= 0 ? product.monthlySold : undefined,
     currentReviewCount:

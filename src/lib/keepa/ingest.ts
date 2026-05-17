@@ -19,7 +19,7 @@ import {
   type KeepaProduct,
   type KeepaSeries,
 } from "@/lib/keepa/client";
-import { findCategory, DEFAULT_CATEGORY } from "@/lib/keepa/categories";
+import { findCategory, DEFAULT_CATEGORY, resolveRootCategoryLabel } from "@/lib/keepa/categories";
 import { keepaProductToMetrics, deriveKeepaMetrics } from "@/lib/keepa/derive";
 import { computeProfit } from "@/lib/profit";
 import { scoreAsin } from "@/lib/scoring";
@@ -289,11 +289,17 @@ export async function ingestDiscover(
     await Promise.all(
       slice.map(async (p) => {
         try {
+          // R7 修正: products.category は **root カテゴリ** (CATEGORIES.label) で
+          // 統一する。 Keepa の rootCategoryId が取れていればそれを優先、 取れない
+          // ときは discovery が指定した appCategory.label を使う。 leaf カテゴリ
+          // (例: "電気ケトル") は粒度が細かすぎてヒートマップで集計できない。
+          const rootLabel =
+            resolveRootCategoryLabel(p.rootCategoryId) ?? appCategory.label;
           await upsertProductMaster({
             asin: p.asin,
             title: p.title,
             brand: p.brand,
-            category: p.category ?? appCategory.label,
+            category: rootLabel,
             image_url: p.imageUrl ?? null,
             current_price: p.currentPrice,
             review_count: p.currentReviewCount,
@@ -358,12 +364,14 @@ export async function ingestFull(asin: string): Promise<IngestFullResult> {
   }
   const series = await fetchKeepaSeries(asin);
 
+  // R7: root カテゴリ (CATEGORIES.label) に正規化
+  const rootLabel = resolveRootCategoryLabel(series.rootCategoryId) ?? series.category;
   // products を保証 upsert (FK 制約)
   await upsertProductMaster({
     asin,
     title: series.title,
     brand: series.brand,
-    category: series.category,
+    category: rootLabel,
     image_url: series.imageUrl ?? null,
     current_price: series.currentPrice,
     review_count: series.currentReviewCount,
@@ -471,11 +479,14 @@ export async function ingestDiff(asin: string): Promise<IngestDiffResult> {
   const p = got[0];
   if (!p) return { asin, updated: false };
 
+  // R7: 既存 ASIN の category も root ラベルに正規化する。
+  // Keepa が rootCategory を返してくれば該当 root を、 取れなければ既存値維持。
+  const rootLabel = resolveRootCategoryLabel(p.rootCategoryId) ?? p.category;
   await upsertProductMaster({
     asin: p.asin,
     title: p.title,
     brand: p.brand,
-    category: p.category,
+    category: rootLabel,
     image_url: p.imageUrl ?? null,
     current_price: p.currentPrice,
     review_count: p.currentReviewCount,
